@@ -1,0 +1,41 @@
+Property Name,Standard Key
+Material ID,material_id
+Formula,formula
+Space group,space_group
+Space group number,space_group_number
+Density,density
+Volume,volume
+Lattice parameters,lattice_parameters
+Crystal system,crystal_system
+Band gap,band_gap
+Direct Band gap,band_gap_direct
+Indirect Band gap,band_gap_indirect
+metallic nature,is_metallic
+Electronic type,electronic_type
+Formation energy,formation_energy
+Formation energy per atom,formation_energy_per_atom
+Energy per atom,energy_per_atom
+Total energy,total_energy
+Energy above hull,energy_above_hull
+Bulk modulus,bulk_modulus
+Shear modulus,shear_modulus
+Elastic modulus,elastic_modulus
+Poisson ratio,poisson_ratio
+Elastic tensor,elastic_tensor
+Hardness,hardness
+Thermal expansion,thermal_expansion
+Thermal conductivity,thermal_conductivity
+Heat capacity,heat_capacity
+Debye temperature,debye_temperature
+Magnetic moment,magnetic_moment
+Magnetic ordering,magnetic_ordering
+magnetic nature,is_magnetic
+Refractive index,refractive_index
+Dielectric constant,dielectric_constant
+Optical absorption,optical_absorption
+Functional,functional
+Calculation method,calculation_method
+Calculation date,calculation_date
+Source database,source_database
+Last modified,last_modified
+Entry ID,entry_id

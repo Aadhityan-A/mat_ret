@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mat_ret"
+version = "0.1.0"
+description = "Unified retrieval and property mapping for materials databases (Materials Project, JARVIS, AFLOW, Alexandria, Materials Cloud, MPDS)"
+authors = [
+    { name = "Aadhityan A", email = "aadhityan1995@gmail.com" }
+]
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.8"
+dependencies = [
+    "pymatgen",
+    "requests",
+    "numpy",
+    "scipy",
+    "mp-api",
+    "jarvis-tools",
+    "optimade[http_client]",
+    "ase",
+    "aflow",
+    "matplotlib",
+    "pandas",
+    "tqdm",
+    "urllib3",
+    "mpds-client"
+]
+
+[project.urls]
+Homepage = "https://github.com/Aadhityan-A/mat_ret"
+BugTracker = "https://github.com/Aadhityan-A/mat_ret/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]

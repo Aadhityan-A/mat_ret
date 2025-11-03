@@ -1,0 +1,14 @@
+pymatgen
+requests
+numpy
+scipy
+mp-api
+jarvis-tools
+optimade[http_client]
+ase
+aflow
+matplotlib
+pandas
+tqdm
+urllib3
+mpds-client
