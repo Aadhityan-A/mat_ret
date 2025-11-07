@@ -37,7 +37,7 @@ All supported properties are defined in `STANDARD_PROPERTIES` (in `src/mat_rev/p
 | Elastic tensor            | `elastic_tensor`            | GPa             |
 | Hardness                  | `hardness`                  | GPa             |
 | Thermal expansion         | `thermal_expansion`         | 10⁻⁶/K          |
-| Thermal conductivity       | `thermal_conductivity`      | W/m·K           |
+| Thermal conductivity      | `thermal_conductivity`      | W/m·K           |
 | Heat capacity             | `heat_capacity`             | J/mol·K         |
 | Debye temperature         | `debye_temperature`         | K               |
 | Magnetic moment           | `magnetic_moment`           | μ_B             |
