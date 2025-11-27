@@ -118,28 +118,6 @@ python -m mat_ret.gui
   - Toggle bonds and unit cell display
 - **Export Options**: Save results as JSON/CSV, export structures as CIF files
 
-### GUI Screenshot Layout
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  🔬 mat_ret - Materials Database Retrieval        [Search Box]  │
-├──────────────┬──────────────────────────────────────────────────┤
-│  Databases   │  Results Table                                   │
-│  ☑ MP        │  ┌─────────────────────────────────────────────┐│
-│  ☑ JARVIS    │  │ Database | ID | Formula | Band Gap | ...   ││
-│  ☑ AFLOW     │  │ MP       | mp-1234 | MgO | 4.2 eV | ...    ││
-│  ☑ Alexandria│  └─────────────────────────────────────────────┘│
-│  ☑ MC        │                                                  │
-│  ☐ OQMD      │  Structure Viewer                                │
-│  ☐ MPDS      │  ┌─────────────────────────────────────────────┐│
-│              │  │      [3D Crystal Structure Display]         ││
-│  API Keys    │  │                  ○ ○                        ││
-│  MP: [____]  │  │                ○   ○                        ││
-│  MPDS:[____] │  └─────────────────────────────────────────────┘│
-│  Limit: [10] │  [Export CIF]  View: [3D ▼]  [Show Bonds ☑]     │
-└──────────────┴──────────────────────────────────────────────────┘
-```
-
 ## Project Structure
 
 ```
