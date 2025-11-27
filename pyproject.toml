@@ -26,8 +26,12 @@ dependencies = [
     "pandas",
     "tqdm",
     "urllib3",
-    "mpds-client"
+    "mpds-client",
+    "PyQt6>=6.4.0"
 ]
+
+[project.scripts]
+mat-ret-gui = "mat_ret.gui:main"
 
 [project.urls]
 Homepage = "https://github.com/Aadhityan-A/mat_ret"
@@ -35,3 +39,4 @@ BugTracker = "https://github.com/Aadhityan-A/mat_ret/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+

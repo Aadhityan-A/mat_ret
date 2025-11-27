@@ -93,6 +93,53 @@ Then run scripts using the environment's Python interpreter:
 .venv/bin/python comprehensive_database_test.py --formula Al2O3 --limit 2
 ```
 
+## Graphical User Interface (GUI)
+
+mat_ret includes a modern PyQt6-based graphical interface for easy materials retrieval.
+
+### Launching the GUI
+
+```bash
+# After installation, use the command-line entry point:
+mat-ret-gui
+
+# Or using Python module syntax:
+python -m mat_ret.gui
+```
+
+### GUI Features
+
+- **Database Selection**: Checkbox interface to select which databases to query
+- **Composition Search**: Enter any chemical formula (e.g., MgO, Fe2O3, LiFePO4)
+- **Results Table**: Interactive table showing material properties from all selected databases
+- **Structure Viewer**: 3D/2D visualization of crystal structures
+  - Multiple view projections (3D, XY, XZ, YZ planes)
+  - Adjustable atom sizes
+  - Toggle bonds and unit cell display
+- **Export Options**: Save results as JSON/CSV, export structures as CIF files
+
+### GUI Screenshot Layout
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  🔬 mat_ret - Materials Database Retrieval        [Search Box]  │
+├──────────────┬──────────────────────────────────────────────────┤
+│  Databases   │  Results Table                                   │
+│  ☑ MP        │  ┌─────────────────────────────────────────────┐│
+│  ☑ JARVIS    │  │ Database | ID | Formula | Band Gap | ...   ││
+│  ☑ AFLOW     │  │ MP       | mp-1234 | MgO | 4.2 eV | ...    ││
+│  ☑ Alexandria│  └─────────────────────────────────────────────┘│
+│  ☑ MC        │                                                  │
+│  ☐ OQMD      │  Structure Viewer                                │
+│  ☐ MPDS      │  ┌─────────────────────────────────────────────┐│
+│              │  │      [3D Crystal Structure Display]         ││
+│  API Keys    │  │                  ○ ○                        ││
+│  MP: [____]  │  │                ○   ○                        ││
+│  MPDS:[____] │  └─────────────────────────────────────────────┘│
+│  Limit: [10] │  [Export CIF]  View: [3D ▼]  [Show Bonds ☑]     │
+└──────────────┴──────────────────────────────────────────────────┘
+```
+
 ## Project Structure
 
 ```
@@ -101,10 +148,19 @@ mat_ret/
 │   ├── api.py                  # High-level fetch helpers
 │   ├── property_mapping.py     # Mapping config and helpers
 │   └── databases.py            # Database client implementations
+├── gui/                        # Graphical user interface
+│   ├── main.py                 # GUI entry point
+│   ├── main_window.py          # Main application window
+│   ├── workers.py              # Async fetch workers
+│   ├── utils.py                # Utility functions and styling
+│   └── widgets/                # UI widgets
+│       ├── database_selector.py    # Database selection panel
+│       ├── results_view.py         # Results table and JSON view
+│       └── structure_viewer.py     # Crystal structure visualization
 ├── doc/                        # Documentation assets (CSV, guides)
-├── example_fetch.py            # Demo script intended to retirive information from all the above mentioned database
-├── example_single_fetch.py            # Demo script intended to retirive information from anyone of the above mentioned database
-├── README                      # Project overview
+├── example_fetch.py            # Demo script intended to retrieve information from all databases
+├── example_single_fetch.py     # Demo script intended to retrieve information from one database
+├── README.md                   # Project overview
 ├── requirements.txt            # Python dependencies
 └── LICENSE                     # CeCILL license
 ```
