@@ -29,11 +29,16 @@ def check_dependencies():
     except ImportError:
         missing.append("PyQt6")
     
-    # Check matplotlib
+    # Check pyqtgraph and OpenGL for 3D structure viewer
     try:
-        import matplotlib
+        import pyqtgraph.opengl
     except ImportError:
-        missing.append("matplotlib")
+        missing.append("pyqtgraph")
+    
+    try:
+        import OpenGL
+    except ImportError:
+        missing.append("PyOpenGL")
     
     # Check mat_ret
     try:
@@ -45,7 +50,7 @@ def check_dependencies():
         print("Missing dependencies:")
         for dep in missing:
             print(f"  - {dep}")
-        print("\nInstall with: pip install PyQt6 matplotlib")
+        print("\nInstall with: pip install PyQt6 pyqtgraph PyOpenGL")
         print("And ensure mat_ret is installed: pip install -e .")
         sys.exit(1)
 

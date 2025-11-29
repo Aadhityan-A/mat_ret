@@ -15,3 +15,5 @@ mpds-client
 
 # GUI dependencies
 PyQt6>=6.4.0
+pyqtgraph>=0.13.0
+PyOpenGL>=3.1.0
