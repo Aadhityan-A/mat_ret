@@ -97,7 +97,7 @@ Then run scripts using the environment's Python interpreter:
 
 mat_ret includes a modern PyQt6-based graphical interface for easy materials retrieval.
 
-![mat_ret GUI Screenshot](doc/Screenshot.png)
+![mat_ret GUI Screenshot](doc/Screenshot.png?raw=true)
 
 ### Launching the GUI
 
