@@ -97,6 +97,8 @@ Then run scripts using the environment's Python interpreter:
 
 mat_ret includes a modern PyQt6-based graphical interface for easy materials retrieval.
 
+![mat_ret GUI Screenshot](Screenshot.png)
+
 ### Launching the GUI
 
 ```bash
@@ -149,4 +151,4 @@ Keep in touch to contribute !!!
 We welcome others to develop/fix the functionalities of this python library with these existing databases and/or provide new databases.
 https://github.com/Aadhityan-A/mat_ret
 
-*Note:* It's still in the developing phase. If you face any issues let us know through github issues. Also there are some lines of code not in use are present for future development purpose.
+*Note:* It's still in the developing phase. If you face any issues let us know through github issues. Also there are some lines of code not in use are for future development purpose.

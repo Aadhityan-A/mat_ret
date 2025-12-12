@@ -102,8 +102,8 @@ class MainWindow(QMainWindow):
         self.structure_viewer = StructureViewerWidget()
         right_splitter.addWidget(self.structure_viewer)
         
-        # Set initial splitter sizes (60% results, 40% structure)
-        right_splitter.setSizes([500, 400])
+        # Set initial splitter sizes (40% results, 60% structure viewer)
+        right_splitter.setSizes([350, 550])
         
         content_splitter.addWidget(right_splitter)
         
