@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mat_ret"
-version = "0.1.0"
+version = "0.3.0"
 description = "Unified retrieval and property mapping for materials databases (Materials Project, JARVIS, AFLOW, Alexandria, Materials Cloud, MPDS)"
 authors = [
     { name = "Aadhityan A", email = "aadhityan1995@gmail.com" }
@@ -20,6 +20,7 @@ dependencies = [
     "mp-api",
     "jarvis-tools",
     "optimade[http_client]",
+    "zstandard",
     "ase",
     "aflow",
     "matplotlib",
@@ -27,7 +28,14 @@ dependencies = [
     "tqdm",
     "urllib3",
     "mpds-client",
-    "PyQt6>=6.4.0"
+    "PyQt6>=6.4.0",
+    "pyqtgraph>=0.13.0",
+    "PyOpenGL>=3.1.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0"
 ]
 
 [project.scripts]
@@ -39,4 +47,3 @@ BugTracker = "https://github.com/Aadhityan-A/mat_ret/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

@@ -292,6 +292,7 @@ class ResultsViewWidget(QWidget):
             'materials_cloud': ('#00BCD4', '🔵'),
             'oqmd': ('#795548', '🟤'),
             'mpds': ('#E91E63', '🔴'),
+            'optimade': ('#607D8B', '🛰️'),
         }
         
         # Add "All Results" item
@@ -302,20 +303,49 @@ class ResultsViewWidget(QWidget):
         
         # Add database items
         for db_id, materials in self.results_data.items():
-            if len(materials) > 0:
-                color, icon = db_colors.get(db_id, ('#666', '⚪'))
-                db_name = self._format_db_name(db_id)
-                
+            if len(materials) == 0:
+                continue
+
+            color, icon = db_colors.get(db_id, ('#666', '⚪'))
+            db_name = self._format_db_name(db_id)
+
+            if db_id == 'optimade':
                 item = QTreeWidgetItem([f"{icon} {db_name} ({len(materials)})"])
                 item.setData(0, Qt.ItemDataRole.UserRole, db_id)
                 item.setForeground(0, QBrush(QColor(color)))
                 self.database_tree.addTopLevelItem(item)
-                
+
+                provider_groups: Dict[str, Dict[str, Any]] = {}
+                for idx, material in enumerate(materials):
+                    provider_id = material.get('provider_id') or material.get('source_database') or 'Unknown'
+                    provider_name = material.get('provider_name') or provider_id
+                    group = provider_groups.setdefault(provider_id, {'name': provider_name, 'indices': []})
+                    group['indices'].append(idx)
+
+                for provider_id, group in provider_groups.items():
+                    provider_label = f"{group['name']} ({len(group['indices'])})"
+                    provider_item = QTreeWidgetItem([f"  {provider_label}"])
+                    provider_item.setData(0, Qt.ItemDataRole.UserRole, ('optimade_provider', provider_id))
+                    item.addChild(provider_item)
+
+                    for idx in group['indices']:
+                        material = materials[idx]
+                        mat_id = material.get('material_id', f'Entry {idx+1}')
+                        formula = material.get('formula', 'Unknown')
+                        child_item = QTreeWidgetItem([f"    {formula} ({mat_id})"])
+                        child_item.setData(0, Qt.ItemDataRole.UserRole, ('material', db_id, idx))
+                        provider_item.addChild(child_item)
+            else:
+                item = QTreeWidgetItem([f"{icon} {db_name} ({len(materials)})"])
+                item.setData(0, Qt.ItemDataRole.UserRole, db_id)
+                item.setForeground(0, QBrush(QColor(color)))
+                self.database_tree.addTopLevelItem(item)
+
                 # Add material sub-items
                 for i, material in enumerate(materials):
                     mat_id = material.get('material_id', f'Entry {i+1}')
                     formula = material.get('formula', 'Unknown')
-                    
+
                     child_item = QTreeWidgetItem([f"  {formula} ({mat_id})"])
                     child_item.setData(0, Qt.ItemDataRole.UserRole, ('material', db_id, i))
                     item.addChild(child_item)
@@ -338,6 +368,7 @@ class ResultsViewWidget(QWidget):
             'materials_cloud': 'Materials Cloud',
             'oqmd': 'OQMD',
             'mpds': 'MPDS',
+            'optimade': 'OPTIMADE',
         }
         return names.get(db_id, db_id)
     
@@ -357,6 +388,9 @@ class ResultsViewWidget(QWidget):
         
         if data == 'all':
             self._show_all_results()
+        elif isinstance(data, tuple) and data[0] == 'optimade_provider':
+            _, provider_id = data
+            self._show_optimade_provider(provider_id)
         elif isinstance(data, tuple) and data[0] == 'material':
             _, db_id, index = data
             self._show_material_details(db_id, index)
@@ -382,6 +416,17 @@ class ResultsViewWidget(QWidget):
             mat['_db_id'] = db_id
         self._populate_table(materials)
         self._update_json_view({db_id: materials})
+
+    def _show_optimade_provider(self, provider_id: str):
+        """Show results for a specific OPTIMADE provider."""
+        materials = []
+        for mat in self.results_data.get('optimade', []):
+            if mat.get('provider_id') == provider_id or mat.get('source_database') == provider_id:
+                mat_copy = mat.copy()
+                mat_copy['_db_id'] = 'optimade'
+                materials.append(mat_copy)
+        self._populate_table(materials)
+        self._update_json_view({'optimade': materials})
     
     def _show_material_details(self, db_id: str, index: int):
         """Show details for a specific material."""

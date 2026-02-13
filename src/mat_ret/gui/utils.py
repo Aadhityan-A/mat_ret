@@ -181,6 +181,7 @@ def format_database_name(db_id: str) -> str:
         'materials_cloud': 'Materials Cloud',
         'oqmd': 'OQMD',
         'mpds': 'MPDS',
+        'optimade': 'OPTIMADE',
     }
     return names.get(db_id, db_id)
 

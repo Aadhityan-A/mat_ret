@@ -3,9 +3,11 @@ Structure Viewer Widget
 
 Professional 3D crystal structure visualization using PyQtGraph with OpenGL.
 Provides publication-quality rendering with proper atom spheres, bonds, and unit cells.
+Cross-platform compatible with proper OpenGL context initialization.
 """
 
 from typing import Dict, Optional, List, Tuple
+import sys
 import numpy as np
 
 from PyQt6.QtWidgets import (
@@ -14,12 +16,125 @@ from PyQt6.QtWidgets import (
     QSlider, QGroupBox, QCheckBox, QSpinBox, QDoubleSpinBox,
     QToolButton, QMenu, QWidgetAction, QColorDialog
 )
+try:
+    from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+except Exception:
+    QOpenGLWidget = None
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QColor, QVector3D
+from PyQt6.QtGui import QFont, QColor, QVector3D, QPalette
 
 import pyqtgraph.opengl as gl
 import pyqtgraph as pg
-from OpenGL.GL import *
+
+# Safe OpenGL import with fallback
+try:
+    from OpenGL.GL import glClearColor, glClear, GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT
+    OPENGL_AVAILABLE = True
+except ImportError:
+    OPENGL_AVAILABLE = False
+
+
+# Background color presets
+BACKGROUND_PRESETS = {
+    'Dark': (0.12, 0.12, 0.15, 1.0),
+    'Black': (0.0, 0.0, 0.0, 1.0),
+    'White': (1.0, 1.0, 1.0, 1.0),
+    'Gray': (0.3, 0.3, 0.3, 1.0),
+}
+
+
+class OpaqueGLViewWidget(gl.GLViewWidget):
+    """
+    A GLViewWidget subclass that ensures opaque background rendering.
+    
+    This fixes transparency/bleed-through issues on various platforms by
+    properly initializing the OpenGL context and paint events.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        self._bg_color = (0.12, 0.12, 0.15, 1.0)
+        self._initialized = False
+        super().__init__(*args, **kwargs)
+    
+    def setBackgroundColor(self, color):
+        """Set background color and update palette."""
+        # Handle various color formats from pyqtgraph
+        if color is None:
+            return
+        
+        # Handle QColor
+        if isinstance(color, QColor):
+            self._bg_color = (
+                color.redF(),
+                color.greenF(),
+                color.blueF(),
+                color.alphaF()
+            )
+        # Handle string colors (from pyqtgraph config)
+        elif isinstance(color, str):
+            qc = QColor(color)
+            if qc.isValid():
+                self._bg_color = (qc.redF(), qc.greenF(), qc.blueF(), qc.alphaF())
+            else:
+                # Default dark background for invalid colors
+                self._bg_color = (0.12, 0.12, 0.15, 1.0)
+        # Handle tuple/list
+        elif isinstance(color, (tuple, list)):
+            if len(color) == 3:
+                self._bg_color = (float(color[0]), float(color[1]), float(color[2]), 1.0)
+            elif len(color) >= 4:
+                self._bg_color = tuple(float(c) for c in color[:4])
+        else:
+            # Try to convert using pg.mkColor
+            try:
+                qc = pg.mkColor(color)
+                self._bg_color = (qc.redF(), qc.greenF(), qc.blueF(), qc.alphaF())
+            except Exception:
+                self._bg_color = (0.12, 0.12, 0.15, 1.0)
+        
+        # Update palette for Qt background
+        palette = self.palette()
+        bg_qcolor = QColor(
+            int(self._bg_color[0] * 255),
+            int(self._bg_color[1] * 255),
+            int(self._bg_color[2] * 255)
+        )
+        palette.setColor(QPalette.ColorRole.Window, bg_qcolor)
+        palette.setColor(QPalette.ColorRole.Base, bg_qcolor)
+        self.setPalette(palette)
+        
+        # Call parent's setBackgroundColor with QColor
+        try:
+            super().setBackgroundColor(bg_qcolor)
+        except Exception:
+            pass
+        
+        # Force repaint
+        self.update()
+    
+    def initializeGL(self):
+        """Initialize OpenGL with proper background color."""
+        super().initializeGL()
+        self._initialized = True
+        if OPENGL_AVAILABLE:
+            glClearColor(
+                self._bg_color[0],
+                self._bg_color[1],
+                self._bg_color[2],
+                self._bg_color[3]
+            )
+    
+    def paintGL(self):
+        """Paint with explicit background clear."""
+        if OPENGL_AVAILABLE and self._initialized:
+            glClearColor(
+                self._bg_color[0],
+                self._bg_color[1],
+                self._bg_color[2],
+                self._bg_color[3]
+            )
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        super().paintGL()
 
 
 # CPK color scheme - standard scientific coloring for elements
@@ -196,9 +311,14 @@ def create_cylinder_mesh(radius: float = 0.1, length: float = 1.0, segments: int
 
 
 class StructureViewerWidget(QWidget):
-    """Professional 3D crystal structure viewer using OpenGL."""
+    """Professional 3D crystal structure viewer using OpenGL.
+    
+    Cross-platform compatible with proper OpenGL initialization and
+    support for different background colors.
+    """
     
     structure_exported = pyqtSignal(str)
+    background_changed = pyqtSignal(str)  # Emits background preset name
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -216,8 +336,22 @@ class StructureViewerWidget(QWidget):
         self.show_bonds = True
         self.show_unit_cell = True
         self.show_axes = True
-        self.background_color = (0.15, 0.15, 0.18, 1.0)
+        self.background_preset = 'Dark'
+        self.background_color = BACKGROUND_PRESETS['Dark']
         
+        # Platform-specific settings
+        self._is_linux = sys.platform.startswith('linux')
+        self._is_macos = sys.platform == 'darwin'
+        self._is_windows = sys.platform.startswith('win')
+
+        # Rendering quality/performance tuning
+        self._sphere_mesh_high = create_sphere_mesh(radius=1.0, rows=20, cols=20)
+        self._sphere_mesh_low = create_sphere_mesh(radius=1.0, rows=12, cols=12)
+        self._low_detail_threshold = 300
+        self._scatter_threshold = 800
+        self._line_antialias_threshold = 1200
+        
+        # Set up the UI
         self._setup_ui()
     
     def _setup_ui(self):
@@ -230,19 +364,35 @@ class StructureViewerWidget(QWidget):
         title_bar = self._create_title_bar()
         layout.addWidget(title_bar)
         
-        # Main 3D view
-        self.gl_widget = gl.GLViewWidget()
-        self.gl_widget.setBackgroundColor(self.background_color)
-        self.gl_widget.setCameraPosition(distance=20, elevation=30, azimuth=45)
-        self.gl_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # Main 3D view using our custom opaque widget
+        self.gl_widget = OpaqueGLViewWidget()
+        self._configure_gl_widget()
         layout.addWidget(self.gl_widget, stretch=1)
         
         # Controls panel
         controls = self._create_controls()
         layout.addWidget(controls)
         
-        # Show placeholder
-        self._show_placeholder()
+        # Show placeholder after widget is fully set up
+        QTimer.singleShot(100, self._show_placeholder)
+    
+    def _configure_gl_widget(self):
+        """Configure the GL widget with proper settings for cross-platform compatibility."""
+        # Set background color
+        self._apply_background_color()
+        
+        # Set camera position
+        self.gl_widget.setCameraPosition(distance=20, elevation=30, azimuth=45)
+        
+        # Size policy
+        self.gl_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        
+        # Set minimum size to prevent collapse
+        self.gl_widget.setMinimumSize(200, 200)
+    
+    def _apply_background_color(self):
+        """Apply the current background color to the GL widget."""
+        self.gl_widget.setBackgroundColor(self.background_color)
     
     def _create_title_bar(self) -> QWidget:
         """Create the title bar."""
@@ -395,6 +545,50 @@ class StructureViewerWidget(QWidget):
         
         controls_layout.addWidget(bond_group)
         
+        # Background color group
+        bg_group = QGroupBox("Background")
+        bg_layout = QHBoxLayout(bg_group)
+        
+        self.bg_combo = QComboBox()
+        self.bg_combo.addItems(list(BACKGROUND_PRESETS.keys()))
+        self.bg_combo.setCurrentText(self.background_preset)
+        self.bg_combo.currentTextChanged.connect(self._change_background)
+        self.bg_combo.setMinimumWidth(80)
+        self.bg_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #2d2d44;
+                color: #e0e0e0;
+                border: 1px solid #3d3d5c;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+            }
+            QComboBox:hover {
+                border-color: #4fc3f7;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 6px solid #b0b0b0;
+                margin-right: 6px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2d2d44;
+                color: #e0e0e0;
+                selection-background-color: #4fc3f7;
+                selection-color: #1a1a2e;
+                border: 1px solid #3d3d5c;
+            }
+        """)
+        bg_layout.addWidget(self.bg_combo)
+        
+        controls_layout.addWidget(bg_group)
+        
         controls_layout.addStretch()
         
         # View buttons
@@ -431,19 +625,36 @@ class StructureViewerWidget(QWidget):
         """Add coordinate axes to the scene."""
         # Remove existing axes
         for item in self.axis_items:
-            self.gl_widget.removeItem(item)
+            try:
+                self.gl_widget.removeItem(item)
+            except Exception:
+                pass
         self.axis_items.clear()
         
         if not self.show_axes:
             return
         
         axis_length = 3.0
-        axis_width = 2.0
+        axis_width = 2.5
+        
+        # Determine if we need brighter colors for light backgrounds
+        is_light_bg = sum(self.background_color[:3]) / 3 > 0.5
+        
+        if is_light_bg:
+            # Darker colors for light backgrounds
+            x_color = (0.9, 0.2, 0.2, 1.0)
+            y_color = (0.2, 0.7, 0.2, 1.0)
+            z_color = (0.2, 0.4, 0.9, 1.0)
+        else:
+            # Brighter colors for dark backgrounds
+            x_color = (1.0, 0.4, 0.4, 1.0)
+            y_color = (0.4, 1.0, 0.4, 1.0)
+            z_color = (0.4, 0.7, 1.0, 1.0)
         
         # X axis (red)
         x_axis = gl.GLLinePlotItem(
             pos=np.array([[0, 0, 0], [axis_length, 0, 0]]),
-            color=(1, 0.3, 0.3, 1),
+            color=x_color,
             width=axis_width,
             antialias=True
         )
@@ -453,7 +664,7 @@ class StructureViewerWidget(QWidget):
         # Y axis (green)
         y_axis = gl.GLLinePlotItem(
             pos=np.array([[0, 0, 0], [0, axis_length, 0]]),
-            color=(0.3, 1, 0.3, 1),
+            color=y_color,
             width=axis_width,
             antialias=True
         )
@@ -463,7 +674,7 @@ class StructureViewerWidget(QWidget):
         # Z axis (blue)
         z_axis = gl.GLLinePlotItem(
             pos=np.array([[0, 0, 0], [0, 0, axis_length]]),
-            color=(0.3, 0.6, 1, 1),
+            color=z_color,
             width=axis_width,
             antialias=True
         )
@@ -537,18 +748,30 @@ class StructureViewerWidget(QWidget):
         
         structure = self.current_structure
         coords = structure.cart_coords
-        species = [str(site.specie) for site in structure.sites]
+        species = [
+            getattr(site.specie, "symbol", str(site.specie))
+            for site in structure.sites
+        ]
         
         # Calculate center of mass for centering
         center = coords.mean(axis=0)
         coords_centered = coords - center
+
+        atom_colors = np.array(
+            [CPK_COLORS.get(elem, (0.5, 0.5, 0.5, 1.0)) for elem in species],
+            dtype=float
+        )
+        atom_radii = np.array(
+            [COVALENT_RADII.get(elem, 1.0) for elem in species],
+            dtype=float
+        ) * self.atom_scale
         
         # Render atoms as spheres
-        self._render_atoms(coords_centered, species)
+        self._render_atoms(coords_centered, atom_colors, atom_radii)
         
         # Render bonds
         if self.show_bonds:
-            self._render_bonds(coords_centered, species)
+            self._render_bonds(coords_centered, atom_colors)
         
         # Render unit cell
         if self.show_unit_cell:
@@ -561,76 +784,101 @@ class StructureViewerWidget(QWidget):
         max_extent = np.max(np.abs(coords_centered)) * 2.5
         self.gl_widget.setCameraPosition(distance=max(max_extent, 15))
     
-    def _render_atoms(self, coords: np.ndarray, species: List[str]):
-        """Render atoms as 3D spheres."""
-        sphere_mesh = create_sphere_mesh(radius=1.0, rows=20, cols=20)
-        
-        for coord, elem in zip(coords, species):
-            # Get element color and radius
-            color = CPK_COLORS.get(elem, (0.5, 0.5, 0.5, 1.0))
-            radius = COVALENT_RADII.get(elem, 1.0) * self.atom_scale
-            
-            # Create colored mesh
-            colors = np.ones((len(sphere_mesh.faces()), 3, 4)) * np.array(color)
-            
+    def _render_atoms(self, coords: np.ndarray, colors: np.ndarray, radii: np.ndarray):
+        """Render atoms as 3D spheres (adaptive quality for performance)."""
+        n_atoms = len(coords)
+        if n_atoms == 0:
+            return
+
+        # Fast path for very large structures: point sprites
+        if n_atoms >= self._scatter_threshold:
+            sizes = np.clip(radii * 2.0, 0.05, None)
+            scatter = gl.GLScatterPlotItem(
+                pos=coords,
+                size=sizes,
+                color=colors,
+                pxMode=False
+            )
+            scatter.setGLOptions('opaque')
+            self.gl_widget.addItem(scatter)
+            self.atom_meshes.append(scatter)
+            return
+
+        sphere_mesh = self._sphere_mesh_low if n_atoms >= self._low_detail_threshold else self._sphere_mesh_high
+
+        for coord, color, radius in zip(coords, colors, radii):
             mesh_item = gl.GLMeshItem(
                 meshdata=sphere_mesh,
-                color=color,
+                color=tuple(color),
                 smooth=True,
                 shader='shaded',
                 glOptions='opaque'
             )
             
-            # Transform: scale and translate
-            mesh_item.scale(radius, radius, radius)
+            # Transform: translate then scale (keeps positions correct)
             mesh_item.translate(coord[0], coord[1], coord[2])
+            mesh_item.scale(radius, radius, radius)
             
             self.gl_widget.addItem(mesh_item)
             self.atom_meshes.append(mesh_item)
     
-    def _render_bonds(self, coords: np.ndarray, species: List[str]):
-        """Render bonds as cylinders between nearby atoms."""
+    def _render_bonds(self, coords: np.ndarray, colors: np.ndarray):
+        """Render bonds as lines between nearby atoms."""
         n_atoms = len(coords)
-        bond_pairs = []
-        
-        # Find bonded pairs
-        for i in range(n_atoms):
-            for j in range(i + 1, n_atoms):
-                dist = np.linalg.norm(coords[i] - coords[j])
-                if dist < self.bond_cutoff:
-                    bond_pairs.append((i, j, dist))
-        
-        # Render each bond as a line (faster than cylinders for many bonds)
-        if bond_pairs:
-            lines = []
-            colors = []
-            
-            for i, j, dist in bond_pairs:
-                pos1 = coords[i]
-                pos2 = coords[j]
-                mid = (pos1 + pos2) / 2
-                
-                # Get colors for both atoms
-                color1 = CPK_COLORS.get(species[i], (0.5, 0.5, 0.5, 1.0))
-                color2 = CPK_COLORS.get(species[j], (0.5, 0.5, 0.5, 1.0))
-                
-                # First half of bond (color of first atom)
-                lines.append([pos1, mid])
-                colors.append([color1, color1])
-                
-                # Second half of bond (color of second atom)
-                lines.append([mid, pos2])
-                colors.append([color2, color2])
-            
-            for line_pts, line_colors in zip(lines, colors):
-                bond_line = gl.GLLinePlotItem(
-                    pos=np.array(line_pts),
-                    color=np.array(line_colors),
-                    width=3.0,
-                    antialias=True
-                )
-                self.gl_widget.addItem(bond_line)
-                self.bond_meshes.append(bond_line)
+        if n_atoms < 2:
+            return
+
+        # Find bonded pairs efficiently when possible
+        pairs = None
+        try:
+            from scipy.spatial import cKDTree
+            tree = cKDTree(coords)
+            pairs = np.array(list(tree.query_pairs(r=self.bond_cutoff)), dtype=int)
+        except Exception:
+            # Fall back to a simple O(n^2) search
+            pair_list = []
+            for i in range(n_atoms):
+                for j in range(i + 1, n_atoms):
+                    dist = np.linalg.norm(coords[i] - coords[j])
+                    if dist < self.bond_cutoff:
+                        pair_list.append((i, j))
+            if pair_list:
+                pairs = np.array(pair_list, dtype=int)
+
+        if pairs is None or len(pairs) == 0:
+            return
+
+        pos1 = coords[pairs[:, 0]]
+        pos2 = coords[pairs[:, 1]]
+        mid = (pos1 + pos2) / 2.0
+
+        # Build line segments: pos1->mid (color1), mid->pos2 (color2)
+        line_positions = np.empty((len(pairs) * 4, 3), dtype=float)
+        line_colors = np.empty((len(pairs) * 4, 4), dtype=float)
+
+        color1 = colors[pairs[:, 0]]
+        color2 = colors[pairs[:, 1]]
+
+        line_positions[0::4] = pos1
+        line_positions[1::4] = mid
+        line_positions[2::4] = mid
+        line_positions[3::4] = pos2
+
+        line_colors[0::4] = color1
+        line_colors[1::4] = color1
+        line_colors[2::4] = color2
+        line_colors[3::4] = color2
+
+        antialias = len(pairs) < self._line_antialias_threshold
+        bond_line = gl.GLLinePlotItem(
+            pos=line_positions,
+            color=line_colors,
+            width=2.0,
+            antialias=antialias,
+            mode='lines'
+        )
+        self.gl_widget.addItem(bond_line)
+        self.bond_meshes.append(bond_line)
     
     def _render_unit_cell(self, lattice_matrix: np.ndarray, center: np.ndarray):
         """Render the unit cell as lines."""
@@ -657,20 +905,32 @@ class StructureViewerWidget(QWidget):
             (4, 7), (5, 7), (6, 7)
         ]
         
-        # Create line data
-        lines = []
-        for i, j in edges:
-            lines.append([vertices[i], vertices[j]])
+        # Create line data in one batch for performance
+        line_positions = np.empty((len(edges) * 2, 3), dtype=float)
+        line_colors = np.empty((len(edges) * 2, 4), dtype=float)
         
-        for line_pts in lines:
-            cell_line = gl.GLLinePlotItem(
-                pos=np.array(line_pts),
-                color=(0.6, 0.8, 1.0, 0.6),
-                width=1.5,
-                antialias=True
-            )
-            self.gl_widget.addItem(cell_line)
-            self.bond_meshes.append(cell_line)  # Reuse bond_meshes for cleanup
+        # Adaptive unit cell color based on background
+        is_light_bg = sum(self.background_color[:3]) / 3 > 0.5
+        if is_light_bg:
+            cell_color = np.array((0.3, 0.5, 0.8, 0.7), dtype=float)
+        else:
+            cell_color = np.array((0.6, 0.8, 1.0, 0.7), dtype=float)
+
+        for idx, (i, j) in enumerate(edges):
+            line_positions[idx * 2] = vertices[i]
+            line_positions[idx * 2 + 1] = vertices[j]
+            line_colors[idx * 2] = cell_color
+            line_colors[idx * 2 + 1] = cell_color
+
+        cell_line = gl.GLLinePlotItem(
+            pos=line_positions,
+            color=line_colors,
+            width=1.5,
+            antialias=True,
+            mode='lines'
+        )
+        self.gl_widget.addItem(cell_line)
+        self.bond_meshes.append(cell_line)  # Reuse bond_meshes for cleanup
     
     def _toggle_bonds(self, state):
         """Toggle bond visibility."""
@@ -688,6 +948,36 @@ class StructureViewerWidget(QWidget):
         """Toggle axes visibility."""
         self.show_axes = bool(state)
         self._add_axes()
+    
+    def _change_background(self, preset_name: str):
+        """Change the background color preset."""
+        if preset_name in BACKGROUND_PRESETS:
+            self.background_preset = preset_name
+            self.background_color = BACKGROUND_PRESETS[preset_name]
+            self._apply_background_color()
+            
+            # Force redraw
+            self.gl_widget.update()
+            
+            # Re-render structure with appropriate colors for the background
+            if self.current_structure:
+                self._render_structure()
+            elif self.show_axes:
+                self._add_axes()
+            
+            self.background_changed.emit(preset_name)
+    
+    def set_background_color(self, r: float, g: float, b: float, a: float = 1.0):
+        """Set a custom background color.
+        
+        Args:
+            r, g, b: RGB values in range 0.0-1.0
+            a: Alpha value in range 0.0-1.0
+        """
+        self.background_color = (r, g, b, a)
+        self.background_preset = 'Custom'
+        self._apply_background_color()
+        self.gl_widget.update()
     
     def _update_atom_size(self, value):
         """Update atom size scaling."""

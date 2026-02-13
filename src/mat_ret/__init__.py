@@ -28,8 +28,15 @@ from .api import (
     fetch_materials_cloud,
     fetch_oqmd,
     fetch_mpds,
+    fetch_optimade,
     fetch_all_databases,
+    list_optimade_providers,
+    harvest_optimade,
+    generate_xrd_pattern_from_structure,
+    generate_xrd_pattern_from_cif,
+    list_xrd_radiations,
 )
+from .xrd import XRDConfig, XRDPeak, XRDResult, export_xrd_pattern_csv, export_xrd_peaks_csv
 
 __all__ = [
     "MaterialsDatabaseClient",
@@ -55,5 +62,16 @@ __all__ = [
     "fetch_materials_cloud",
     "fetch_oqmd",
     "fetch_mpds",
+    "fetch_optimade",
     "fetch_all_databases",
+    "list_optimade_providers",
+    "harvest_optimade",
+    "generate_xrd_pattern_from_structure",
+    "generate_xrd_pattern_from_cif",
+    "list_xrd_radiations",
+    "XRDConfig",
+    "XRDPeak",
+    "XRDResult",
+    "export_xrd_pattern_csv",
+    "export_xrd_peaks_csv",
 ]

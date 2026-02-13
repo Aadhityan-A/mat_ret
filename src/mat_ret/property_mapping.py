@@ -179,6 +179,16 @@ DATABASE_PROPERTY_MAPPINGS = {
         'lattice_parameters': 'lattice_vectors',
         'last_modified': 'last_modified'
     },
+
+    'optimade': {
+        # Generic OPTIMADE fields
+        'material_id': 'id',
+        'formula': 'chemical_formula_reduced',
+        'space_group': 'space_group_symbol_hermann_mauguin',
+        'space_group_number': 'space_group_it_number',
+        'lattice_parameters': 'lattice_vectors',
+        'last_modified': 'last_modified'
+    },
     
     'mpds': {
         # MPDS database fields

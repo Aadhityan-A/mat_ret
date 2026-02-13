@@ -4,21 +4,27 @@ Main Window for mat_ret GUI
 The central window combining all widgets for materials database retrieval.
 """
 
-from typing import Optional
-import sys
+from typing import List, Optional
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QLabel, QLineEdit, QPushButton, QStatusBar, QProgressBar,
     QFrame, QMessageBox, QApplication, QToolBar, QMenuBar, QMenu,
-    QFileDialog, QSizePolicy
+    QFileDialog, QSizePolicy, QToolButton, QDialog
 )
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QFont, QAction, QIcon, QKeySequence
+from PyQt6.QtGui import QFont, QAction, QIcon, QKeySequence, QPixmap, QPainter, QPen, QColor
 
-from .widgets import DatabaseSelectorWidget, ResultsViewWidget, StructureViewerWidget
+from .widgets import (
+    DatabaseSelectorWidget,
+    PeriodicTableDialog,
+    ResultsViewWidget,
+    StructureViewerWidget,
+    XRDGeneratorWindow,
+)
 from .workers import FetchWorker
-from .utils import APP_STYLESHEET, validate_composition
+from .utils import APP_STYLESHEET
+from ..search import SearchQuery, format_chemsys, parse_search_text
 
 
 class MainWindow(QMainWindow):
@@ -27,6 +33,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.fetch_worker = None
+        self.current_material = None
+        self.xrd_window = None
+        self._selected_elements: List[str] = []
+        self._updating_search_text = False
         self._setup_ui()
         self._setup_menu()
         self._setup_connections()
@@ -167,7 +177,7 @@ class MainWindow(QMainWindow):
         search_layout.addWidget(search_icon)
         
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Enter composition (e.g., MgO, Fe2O3, LiFePO4)")
+        self.search_input.setPlaceholderText("Enter composition or element system (e.g., MgO or Fe-O)")
         self.search_input.setMinimumWidth(350)
         self.search_input.setStyleSheet("""
             QLineEdit {
@@ -178,7 +188,30 @@ class MainWindow(QMainWindow):
             }
         """)
         self.search_input.returnPressed.connect(self._on_search)
+        self.search_input.textEdited.connect(self._on_search_text_edited)
         search_layout.addWidget(self.search_input)
+
+        self.periodic_button = QToolButton()
+        self.periodic_button.setIcon(self._create_periodic_table_icon())
+        self.periodic_button.setIconSize(QSize(18, 18))
+        self.periodic_button.setToolTip("Select elements from periodic table")
+        self.periodic_button.setStyleSheet("""
+            QToolButton {
+                border: 1px solid #d0d7de;
+                border-radius: 4px;
+                background: #f8fafc;
+                padding: 6px;
+            }
+            QToolButton:hover {
+                border-color: #1976D2;
+                background: #eef4fb;
+            }
+            QToolButton:pressed {
+                background: #e3edf9;
+            }
+        """)
+        self.periodic_button.clicked.connect(self._open_periodic_table_dialog)
+        search_layout.addWidget(self.periodic_button)
         
         self.search_button = QPushButton("Search")
         self.search_button.setStyleSheet("""
@@ -231,7 +264,7 @@ class MainWindow(QMainWindow):
         stats_layout = QVBoxLayout()
         stats_layout.setSpacing(2)
         
-        self.stats_label = QLabel("7 Databases Available")
+        self.stats_label = QLabel("8 Databases Available")
         self.stats_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         self.stats_label.setStyleSheet("color: white;")
         stats_layout.addWidget(self.stats_label)
@@ -270,7 +303,7 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.progress_bar)
         
         # Status message
-        self.status_bar.showMessage("Ready. Enter a composition and click Search.")
+        self.status_bar.showMessage("Ready. Enter a composition or element system and click Search.")
     
     def _setup_menu(self):
         """Set up the menu bar."""
@@ -301,6 +334,14 @@ class MainWindow(QMainWindow):
         clear_action = QAction("Clear Results", self)
         clear_action.triggered.connect(self._clear_results)
         view_menu.addAction(clear_action)
+
+        # Tools menu
+        tools_menu = menubar.addMenu("&Tools")
+
+        xrd_action = QAction("XRD Generator...", self)
+        xrd_action.setShortcut("Ctrl+Shift+X")
+        xrd_action.triggered.connect(self._open_xrd_generator)
+        tools_menu.addAction(xrd_action)
         
         # Help menu
         help_menu = menubar.addMenu("&Help")
@@ -321,22 +362,86 @@ class MainWindow(QMainWindow):
         """Handle database selection changes."""
         count = len(selected)
         self.selected_label.setText(f"{count} selected")
+
+    def _create_periodic_table_icon(self) -> QIcon:
+        """Create a lightweight periodic-table style icon."""
+        pixmap = QPixmap(18, 18)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        pen = QPen(QColor("#2F4F6F"))
+        pen.setWidth(1)
+        painter.setPen(pen)
+
+        cell = 5
+        offsets = [
+            (1, 1), (7, 1), (13, 1),
+            (1, 7), (7, 7), (13, 7),
+            (1, 13), (7, 13), (13, 13),
+        ]
+        for x, y in offsets:
+            painter.drawRect(x, y, cell, cell)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _set_search_text(self, text: str) -> None:
+        """Set search box text without treating it as manual user edits."""
+        self._updating_search_text = True
+        self.search_input.setText(text)
+        self._updating_search_text = False
+
+    def _on_search_text_edited(self, text: str) -> None:
+        """Clear periodic-table state when user manually diverges from selected chemsys."""
+        if self._updating_search_text or not self._selected_elements:
+            return
+        if text.strip() != format_chemsys(self._selected_elements):
+            self._selected_elements = []
+
+    def _open_periodic_table_dialog(self) -> None:
+        """Open periodic table picker and write selected chemsys into search input."""
+        dialog = PeriodicTableDialog(self, selected_elements=self._selected_elements)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self._selected_elements = dialog.selected_elements()
+        if self._selected_elements:
+            self._set_search_text(format_chemsys(self._selected_elements))
+        else:
+            self._set_search_text("")
     
     def _on_search(self):
         """Handle search button click."""
-        formula = self.search_input.text().strip()
-        
-        # Validate composition
-        is_valid, result = validate_composition(formula)
-        if not is_valid:
-            QMessageBox.warning(self, "Invalid Composition", result)
+        query_text = self.search_input.text().strip()
+
+        try:
+            query = parse_search_text(query_text)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Query", str(exc))
             return
+
+        selected_chemsys = format_chemsys(self._selected_elements) if self._selected_elements else ""
+        if self._selected_elements and query_text == selected_chemsys:
+            query = SearchQuery(
+                mode="elements_all",
+                formula=None,
+                elements=list(self._selected_elements),
+                display_text=selected_chemsys,
+            )
         
         # Get selected databases
         selected_dbs = self.database_selector.get_selected_databases()
         if not selected_dbs:
             QMessageBox.warning(self, "No Databases Selected",
                               "Please select at least one database to search.")
+            return
+
+        optimade_providers = self.database_selector.get_selected_optimade_providers()
+        if 'optimade' in selected_dbs and not optimade_providers:
+            QMessageBox.warning(
+                self,
+                "No OPTIMADE Providers Selected",
+                "Please select at least one OPTIMADE provider.",
+            )
             return
         
         # Get API keys and limit
@@ -374,9 +479,15 @@ class MainWindow(QMainWindow):
         self.structure_viewer.clear_structure()
         
         # Start fetch
-        self._start_fetch(formula, selected_dbs, limit, api_keys)
+        self._start_fetch(
+            query=query,
+            databases=selected_dbs,
+            limit=limit,
+            api_keys=api_keys,
+            optimade_providers=optimade_providers,
+        )
     
-    def _start_fetch(self, formula: str, databases: list, limit: int, api_keys: dict):
+    def _start_fetch(self, query: SearchQuery, databases: list, limit: int, api_keys: dict, optimade_providers: list):
         """Start the fetch worker."""
         # Update UI
         self.search_button.setEnabled(False)
@@ -385,15 +496,18 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)  # Indeterminate
         
-        self.status_bar.showMessage(f"Searching for {formula}...")
+        self.status_bar.showMessage(f"Searching for {query.display_text}...")
         
         # Create and start worker
         self.fetch_worker = FetchWorker(
-            formula=formula,
+            formula=query.formula or query.display_text,
+            query_mode=query.mode,
+            elements=query.elements,
             databases=databases,
             limit=limit,
             mp_api_key=api_keys.get('mp_api_key'),
-            mpds_api_key=api_keys.get('mpds_api_key')
+            mpds_api_key=api_keys.get('mpds_api_key'),
+            optimade_providers=optimade_providers,
         )
         
         self.fetch_worker.status_update.connect(self._on_status_update)
@@ -444,16 +558,32 @@ class MainWindow(QMainWindow):
             )
         else:
             self.status_bar.showMessage("No results found. Try a different composition.")
-    
+
     def _on_material_selected(self, material: dict):
         """Handle material selection for structure viewing."""
+        self.current_material = material
         self.structure_viewer.set_structure(material)
-    
+        if self.xrd_window is not None:
+            self.xrd_window.set_current_material(material)
+
     def _clear_results(self):
         """Clear all results."""
+        self.current_material = None
         self.results_view.clear_results()
         self.structure_viewer.clear_structure()
-        self.status_bar.showMessage("Results cleared. Enter a new composition to search.")
+        if self.xrd_window is not None:
+            self.xrd_window.set_current_material(None)
+        self.status_bar.showMessage("Results cleared. Enter a new composition or element system to search.")
+
+    def _open_xrd_generator(self):
+        """Open or focus the XRD Generator window."""
+        if self.xrd_window is None:
+            self.xrd_window = XRDGeneratorWindow(self)
+
+        self.xrd_window.set_current_material(self.current_material)
+        self.xrd_window.show()
+        self.xrd_window.raise_()
+        self.xrd_window.activateWindow()
     
     def _export_json(self):
         """Export results to JSON."""
@@ -512,6 +642,7 @@ class MainWindow(QMainWindow):
                 <li>Materials Cloud</li>
                 <li>OQMD</li>
                 <li>MPDS</li>
+                <li>OPTIMADE providers</li>
             </ul>
             <p>
                 <a href="https://github.com/Aadhityan-A/mat_ret">GitHub Repository</a>
@@ -534,5 +665,5 @@ class MainWindow(QMainWindow):
             
             self.fetch_worker.cancel()
             self.fetch_worker.wait()
-        
+
         event.accept()

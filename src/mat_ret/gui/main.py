@@ -39,6 +39,12 @@ def check_dependencies():
         import OpenGL
     except ImportError:
         missing.append("PyOpenGL")
+
+    # Check Matplotlib for XRD plotting
+    try:
+        import matplotlib
+    except ImportError:
+        missing.append("matplotlib")
     
     # Check mat_ret
     try:
@@ -50,7 +56,7 @@ def check_dependencies():
         print("Missing dependencies:")
         for dep in missing:
             print(f"  - {dep}")
-        print("\nInstall with: pip install PyQt6 pyqtgraph PyOpenGL")
+        print("\nInstall with: pip install PyQt6 pyqtgraph PyOpenGL matplotlib")
         print("And ensure mat_ret is installed: pip install -e .")
         sys.exit(1)
 
@@ -62,10 +68,28 @@ def main():
     
     from PyQt6.QtWidgets import QApplication
     from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QIcon
+    from PyQt6.QtGui import QIcon, QSurfaceFormat
     
     from mat_ret.gui.main_window import MainWindow
     
+    # Prefer desktop OpenGL when available for better performance
+    try:
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseDesktopOpenGL, True)
+    except Exception:
+        pass
+    try:
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+    except Exception:
+        pass
+
+    # Configure OpenGL surface format (depth buffer improves 3D rendering)
+    fmt = QSurfaceFormat()
+    fmt.setDepthBufferSize(24)
+    fmt.setStencilBufferSize(8)
+    fmt.setSamples(4)
+    fmt.setSwapInterval(1)
+    QSurfaceFormat.setDefaultFormat(fmt)
+
     # Enable high DPI scaling
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough

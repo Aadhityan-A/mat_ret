@@ -19,6 +19,9 @@ MPDS_API_KEY = "" # Provide your MPDS API key here
 # AFLOW settings (no key required)
 AFLOW_BASE_URL = "http://aflowlib.duke.edu/search/API/"
 
+# OPTIMADE registry
+OPTIMADE_REGISTRY_URL = os.getenv("OPTIMADE_REGISTRY_URL", "https://providers.optimade.org")
+
 # Download settings
 DOWNLOAD_LIMIT_PER_DB = int(os.getenv("MAT_REV_DOWNLOAD_LIMIT", "10"))
 

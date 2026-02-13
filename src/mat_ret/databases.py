@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import requests
 import re
@@ -59,9 +59,17 @@ from .property_mapping import (
     STANDARD_PROPERTIES,
     DATABASE_PROPERTY_MAPPINGS,
 )
+from .optimade.registry import fetch_registry_links
+from .search import contains_all_elements, format_chemsys, normalize_elements
 
 
 AFLOW_REST_URL = os.getenv("AFLOW_BASE_URL", "http://aflowlib.duke.edu/search/API/")
+
+
+def _build_optimade_elements_filter(elements: Iterable[str]) -> str:
+    normalized = normalize_elements(elements)
+    quoted = ", ".join(f'"{symbol}"' for symbol in normalized)
+    return f"elements HAS ALL {quoted}"
 
 
 class MaterialsDatabaseClient:
@@ -73,7 +81,12 @@ class MaterialsDatabaseClient:
         self.output_dir = base_dir / database_name
         self.output_dir.mkdir(parents=True, exist_ok=True)
     
-    def get_structures(self, formula: str, limit: int = 10) -> List[Dict]:
+    def get_structures(
+        self,
+        formula: str,
+        limit: int = 10,
+        elements: Optional[List[str]] = None,
+    ) -> List[Dict]:
         """Get structures for a given formula"""
         raise NotImplementedError
     
@@ -92,46 +105,75 @@ class MaterialsProjectClient(MaterialsDatabaseClient):
             raise ImportError("mp-api is required for Materials Project access")
         self.client = MPRester(api_key)
     
-    def get_structures(self, formula: str, limit: int = 10) -> List[Dict]:
-        """Get structures from Materials Project with GGA PBE functional"""
+    def get_structures(
+        self,
+        formula: str,
+        limit: int = 10,
+        elements: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Get structures from Materials Project with GGA PBE functional."""
         try:
-            # Get available properties for Materials Project
+            requested_elements = normalize_elements(elements or []) if elements else []
+        except ValueError as exc:
+            print(f"Error retrieving from Materials Project: {exc}")
+            return []
+
+        try:
             available_props = get_available_properties('materials_project')
-            
-            # Search for materials with the given formula - use only available fields
-            docs = self.client.materials.summary.search(
-                formula=formula,
-                theoretical=True,
-                fields=["material_id", "formula_pretty", "structure", "band_gap", 
-                       "formation_energy_per_atom", "energy_per_atom", "density",
-                       "symmetry", "volume", "is_metal", "energy_above_hull",
-                       "total_magnetization", "ordering", "bulk_modulus", "shear_modulus"]
-            )
-            
+
+            search_kwargs: Dict[str, Any] = {
+                "theoretical": True,
+                "fields": [
+                    "material_id",
+                    "formula_pretty",
+                    "structure",
+                    "band_gap",
+                    "formation_energy_per_atom",
+                    "energy_per_atom",
+                    "density",
+                    "symmetry",
+                    "volume",
+                    "is_metal",
+                    "energy_above_hull",
+                    "total_magnetization",
+                    "ordering",
+                    "bulk_modulus",
+                    "shear_modulus",
+                ],
+            }
+            if requested_elements:
+                search_kwargs["elements"] = requested_elements
+            else:
+                search_kwargs["formula"] = formula
+
+            docs = self.client.materials.summary.search(**search_kwargs)
+
             results = []
-            for i, doc in enumerate(docs[:limit]):
-                if doc.structure:
-                    # Convert doc to dictionary for property extraction
-                    doc_dict = doc.model_dump() if hasattr(doc, 'model_dump') else doc.__dict__
-                    
-                    # Use property mapping to extract standardized properties
-                    structure_data = {
-                        'database': 'Materials Project',
-                        'structure': doc.structure
-                    }
-                    
-                    # Extract all available properties using mapping
-                    for prop_name in available_props:
-                        value = get_property_value(doc_dict, 'materials_project', prop_name)
-                        if value is not None:
-                            structure_data[STANDARD_PROPERTIES[prop_name]] = value
-                    
-                    # Set functional information
-                    structure_data['functional'] = 'GGA PBE'
-                    structure_data['source_database'] = 'Materials Project'
-                    
-                    results.append(structure_data)
-            
+            for doc in docs:
+                if len(results) >= limit:
+                    break
+                if not getattr(doc, "structure", None):
+                    continue
+
+                doc_dict = doc.model_dump() if hasattr(doc, 'model_dump') else doc.__dict__
+                formula_value = doc_dict.get("formula_pretty") or formula
+                if requested_elements and not contains_all_elements(formula_value, requested_elements):
+                    continue
+
+                structure_data = {
+                    'database': 'Materials Project',
+                    'structure': doc.structure
+                }
+
+                for prop_name in available_props:
+                    value = get_property_value(doc_dict, 'materials_project', prop_name)
+                    if value is not None:
+                        structure_data[STANDARD_PROPERTIES[prop_name]] = value
+
+                structure_data['functional'] = 'GGA PBE'
+                structure_data['source_database'] = 'Materials Project'
+                results.append(structure_data)
+
             return results
         except Exception as e:
             print(f"Error retrieving from Materials Project: {e}")
@@ -163,47 +205,54 @@ class JARVISClient(MaterialsDatabaseClient):
         if data is None or JarvisAtoms is None:
             raise ImportError("jarvis-tools is required for JARVIS access")
     
-    def get_structures(self, formula: str, limit: int = 10) -> List[Dict]:
-        """Get structures from JARVIS-DFT database"""
+    def get_structures(
+        self,
+        formula: str,
+        limit: int = 10,
+        elements: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Get structures from JARVIS-DFT database."""
         try:
-            # Download JARVIS-DFT dataset
+            requested_elements = normalize_elements(elements or []) if elements else []
+        except ValueError as exc:
+            print(f"Error retrieving from JARVIS: {exc}")
+            return []
+
+        try:
             dft_3d = data('dft_3d')
-            
+
             results = []
-            count = 0
-            
+            available_props = get_available_properties('jarvis')
+            normalized_formula = formula.replace(' ', '')
+
             for entry in dft_3d:
-                if count >= limit:
+                if len(results) >= limit:
                     break
-                
-                # Check if formula matches
-                if entry.get('formula', '').replace(' ', '') == formula.replace(' ', ''):
-                    # Convert JARVIS atoms to pymatgen structure
-                    jarvis_atoms = JarvisAtoms.from_dict(entry['atoms'])
-                    pymatgen_structure = jarvis_atoms.pymatgen_converter()
-                    
-                    # Use property mapping to extract standardized properties
-                    structure_data = {
-                        'database': 'JARVIS',
-                        'structure': pymatgen_structure
-                    }
-                    
-                    # Get available properties for JARVIS
-                    available_props = get_available_properties('jarvis')
-                    
-                    # Extract all available properties using mapping
-                    for prop_name in available_props:
-                        value = get_property_value(entry, 'jarvis', prop_name)
-                        if value is not None:
-                            structure_data[STANDARD_PROPERTIES[prop_name]] = value
-                    
-                    # Set functional and source information
-                    structure_data['functional'] = 'GGA PBE/optB88vdW'
-                    structure_data['source_database'] = 'JARVIS'
-                    
-                    results.append(structure_data)
-                    count += 1
-            
+
+                entry_formula = entry.get('formula', '')
+                if requested_elements:
+                    if not contains_all_elements(entry_formula, requested_elements):
+                        continue
+                elif entry_formula.replace(' ', '') != normalized_formula:
+                    continue
+
+                jarvis_atoms = JarvisAtoms.from_dict(entry['atoms'])
+                pymatgen_structure = jarvis_atoms.pymatgen_converter()
+
+                structure_data = {
+                    'database': 'JARVIS',
+                    'structure': pymatgen_structure
+                }
+
+                for prop_name in available_props:
+                    value = get_property_value(entry, 'jarvis', prop_name)
+                    if value is not None:
+                        structure_data[STANDARD_PROPERTIES[prop_name]] = value
+
+                structure_data['functional'] = 'GGA PBE/optB88vdW'
+                structure_data['source_database'] = 'JARVIS'
+                results.append(structure_data)
+
             return results
         except Exception as e:
             print(f"Error retrieving from JARVIS: {e}")
@@ -257,17 +306,28 @@ class AFLOWClient(MaterialsDatabaseClient):
                 return None
         return cls._schema_fields
 
-    def get_structures(self, formula: str, limit: int = 10) -> List[Dict]:
+    def get_structures(
+        self,
+        formula: str,
+        limit: int = 10,
+        elements: Optional[List[str]] = None,
+    ) -> List[Dict]:
         """Get structures from AFLOW database"""
         try:
             # Use REST API approach (aflow package has API issues)
-            return self._get_structures_rest_api(formula, limit)
+            return self._get_structures_rest_api(formula, limit, elements=elements)
                 
         except Exception as e:
             print(f"Error retrieving from AFLOW: {e}")
             return []
     
-    def _get_structures_rest_api(self, formula: str, limit: int) -> List[Dict]:
+    def _get_structures_rest_api(
+        self,
+        formula: str,
+        limit: int,
+        *,
+        elements: Optional[List[str]] = None,
+    ) -> List[Dict]:
         """Get structures using AFLOW REST API."""
         results: List[Dict] = []
 
@@ -299,23 +359,26 @@ class AFLOWClient(MaterialsDatabaseClient):
         if schema_fields:
             requested_fields = {field for field in requested_fields if field in schema_fields}
 
-        elements = re.findall(r'[A-Z][a-z]?', formula)
-        unique_species: List[str] = []
-        for el in elements:
-            if el not in unique_species:
-                unique_species.append(el)
+        if elements:
+            unique_species = normalize_elements(elements)
+        else:
+            formula_elements = re.findall(r'[A-Z][a-z]?', formula)
+            unique_species = []
+            for el in formula_elements:
+                if el not in unique_species:
+                    unique_species.append(el)
 
         if not unique_species:
             return results
 
-        nspecies = len(unique_species)
-        paging_count = max(1, limit)
+        paging_count = max(1, limit if not elements else limit * 8)
 
         query_parts = [
             f"species({','.join(unique_species)})",
-            f"nspecies({nspecies})",
             f"paging(0,{paging_count})",
         ]
+        if not elements:
+            query_parts.append(f"nspecies({len(unique_species)})")
         query_parts.extend(sorted(requested_fields))
 
         base_url = AFLOW_REST_URL.rstrip('/')
@@ -340,8 +403,13 @@ class AFLOWClient(MaterialsDatabaseClient):
         else:
             entries = []
 
-        for entry in entries[:limit]:
+        for entry in entries:
+            if len(results) >= limit:
+                break
             structure_data: Dict = {'database': 'AFLOW'}
+
+            if elements and not contains_all_elements(entry.get("compound", ""), unique_species):
+                continue
 
             for prop in props:
                 value = get_property_value(entry, 'aflow', prop)
@@ -487,74 +555,92 @@ class AlexandriaClient(MaterialsDatabaseClient):
         self.base_url = "https://alexandria.icams.rub.de/pbe"  # PBE functional database
         self.pbesol_url = "https://alexandria.icams.rub.de/pbesol"  # PBEsol functional database
     
-    def get_structures(self, formula: str, limit: int = 10) -> List[Dict]:
-        """Get structures from Alexandria database using OPTIMADE API"""
+    def get_structures(
+        self,
+        formula: str,
+        limit: int = 10,
+        elements: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Get structures from Alexandria database using OPTIMADE API."""
         try:
+            requested_elements = normalize_elements(elements or []) if elements else []
+        except ValueError as exc:
+            print(f"Error retrieving from Alexandria: {exc}")
+            return []
+
+        try:
+            normalized_formula = formula
+            if not requested_elements:
+                try:
+                    normalized_formula = Composition(formula).reduced_formula
+                except Exception:
+                    normalized_formula = formula
+
+            filter_str = (
+                _build_optimade_elements_filter(requested_elements)
+                if requested_elements
+                else f'chemical_formula_reduced="{normalized_formula}"'
+            )
+
             results = []
-            
+            available_props = get_available_properties('alexandria')
+
             # Try both PBE and PBEsol functionals
             for functional, url in [("PBE", self.base_url), ("PBEsol", self.pbesol_url)]:
                 try:
-                    # Construct OPTIMADE query
                     query_url = f"{url}/v1/structures"
                     params = {
-                        'filter': f'chemical_formula_reduced="{formula}"',
-                        'page_limit': min(limit, 5)  # Split between functionals
+                        'filter': filter_str,
+                        'page_limit': max(1, min(limit, 5)),
                     }
-                    
+
                     response = requests.get(query_url, params=params, timeout=30)
-                    
+
                     if response.status_code == 200:
                         data = response.json()
                         entries = data.get('data', [])
-                        
+
                         for entry in entries:
+                            if len(results) >= limit:
+                                break
+
                             attributes = entry.get('attributes', {})
-                            
-                            # Combine entry and attributes for property extraction
                             full_data = {**entry, **attributes}
-                            
-                            # Use property mapping to extract standardized properties
-                            structure_data = {
-                                'database': 'Alexandria'
-                            }
-                            
-                            # Get available properties for Alexandria
-                            available_props = get_available_properties('alexandria')
-                            
-                            # Extract all available properties using mapping
+                            if requested_elements and not contains_all_elements(
+                                full_data.get("chemical_formula_reduced", ""),
+                                requested_elements,
+                            ):
+                                continue
+
+                            structure_data = {'database': 'Alexandria'}
+
                             for prop_name in available_props:
                                 value = get_property_value(full_data, 'alexandria', prop_name)
                                 if value is not None:
                                     structure_data[STANDARD_PROPERTIES[prop_name]] = value
-                            
-                            # Set functional information
+
                             structure_data['functional'] = f'GGA {functional}'
                             structure_data['source_database'] = 'Alexandria'
-                            
-                            # Try to construct pymatgen structure
+
                             if all(k in attributes for k in ['lattice_vectors', 'cartesian_site_positions', 'species_at_sites']):
                                 try:
                                     structure = self._create_pymatgen_structure(attributes)
                                     structure_data['structure'] = structure
                                 except Exception as e:
                                     print(f"  Could not create structure: {e}")
-                            
+
                             results.append(structure_data)
-                            
-                            if len(results) >= limit:
-                                break
-                        
+
                         print(f"  Found {len(entries)} materials from Alexandria ({functional})")
-                    
+
                 except requests.RequestException as e:
                     print(f"  Error querying Alexandria {functional}: {e}")
-                
+
                 if len(results) >= limit:
                     break
-            
+
             return results[:limit]
-        
+
         except Exception as e:
             print(f"Error retrieving from Alexandria: {e}")
             return []
@@ -875,14 +961,29 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
             print(f"  Could not create pymatgen structure from OPTIMADE attributes: {exc}")
             return None
 
-    def get_structures(self, formula: str, limit: int = 10) -> List[Dict]:
+    def get_structures(
+        self,
+        formula: str,
+        limit: int = 10,
+        elements: Optional[List[str]] = None,
+    ) -> List[Dict]:
         """Retrieve Materials Cloud structures using the official OPTIMADE client."""
         if OptimadeClient is None or OptimadeStructure is None:
             print("  Materials Cloud client unavailable: install optimade[http_client] to enable access.")
             return []
 
+        try:
+            requested_elements = normalize_elements(elements or []) if elements else []
+        except ValueError as exc:
+            print(f"  Materials Cloud query validation failed: {exc}")
+            return []
+
         normalized_formula = self._normalize_formula(formula)
-        filter_str = f'chemical_formula_reduced="{normalized_formula}"'
+        filter_str = (
+            _build_optimade_elements_filter(requested_elements)
+            if requested_elements
+            else f'chemical_formula_reduced="{normalized_formula}"'
+        )
         results: List[Dict] = []
         available_props = get_available_properties('materials_cloud')
         response_fields = list(self._optimade_response_fields())
@@ -915,13 +1016,28 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
                     )
                     response = client.structures.get(filter=filter_str)
 
-                entries = (
-                    response
-                    .get('structures', {})
-                    .get(filter_str, {})
-                    .get(base_url, {})
-                    .get('data', [])
-                )
+                entries: List[Dict[str, Any]] = []
+                structures_blob = response.get('structures', {})
+                if isinstance(structures_blob, dict):
+                    primary = structures_blob.get(filter_str, {})
+                    if isinstance(primary, dict):
+                        by_provider = primary.get(base_url, {})
+                        if isinstance(by_provider, dict):
+                            primary_data = by_provider.get('data', [])
+                            if isinstance(primary_data, list):
+                                entries = primary_data
+
+                    if not entries:
+                        for value in structures_blob.values():
+                            if not isinstance(value, dict):
+                                continue
+                            by_provider = value.get(base_url, {})
+                            if not isinstance(by_provider, dict):
+                                continue
+                            fallback_data = by_provider.get('data', [])
+                            if isinstance(fallback_data, list):
+                                entries = fallback_data
+                                break
             except Exception as exc:
                 print(f"  Materials Cloud query failed for {archive.get('id')}: {exc}")
                 continue
@@ -936,6 +1052,11 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
                     break
 
                 attributes = entry.get('attributes', {})
+                if requested_elements and not contains_all_elements(
+                    attributes.get("chemical_formula_reduced", ""),
+                    requested_elements,
+                ):
+                    continue
                 full_data = {
                     **entry,
                     **attributes,
@@ -1043,6 +1164,235 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
         return str(cif_path)
 
 
+class OptimadeSearchClient(MaterialsDatabaseClient):
+    """Generic OPTIMADE client for formula-based searches across providers."""
+
+    def __init__(
+        self,
+        output_directory: Optional[Path] = None,
+        *,
+        registry_url: Optional[str] = None,
+        providers: Optional[List[Dict[str, str]]] = None,
+        request_timeout: int = 30,
+        max_providers: Optional[int] = None,
+    ):
+        super().__init__("optimade", output_directory=output_directory)
+        self.request_timeout = request_timeout
+        self.max_providers = max_providers
+        self._providers: Optional[List[Dict[str, str]]] = None
+
+        if registry_url is None:
+            try:
+                import config  # type: ignore
+
+                registry_url = getattr(config, "OPTIMADE_REGISTRY_URL", None)
+            except ImportError:
+                registry_url = None
+
+        self.registry_url = registry_url
+
+        if providers is not None:
+            cleaned: List[Dict[str, str]] = []
+            for provider in providers:
+                if not isinstance(provider, dict):
+                    continue
+                base_url = provider.get("base_url")
+                if not base_url:
+                    continue
+                provider_id = provider.get("id") or base_url
+                provider_name = provider.get("name") or provider_id
+                cleaned.append(
+                    {
+                        "id": provider_id,
+                        "name": provider_name,
+                        "base_url": base_url,
+                    }
+                )
+            self._providers = cleaned
+
+    def _normalize_formula(self, formula: str) -> str:
+        try:
+            return Composition(formula).reduced_formula
+        except Exception:
+            return formula
+
+    def _get_providers(self) -> List[Dict[str, str]]:
+        if self._providers is not None:
+            return self._providers
+
+        if not self.registry_url:
+            self._providers = []
+            return self._providers
+
+        try:
+            self._providers = fetch_registry_links(
+                self.registry_url,
+                request_timeout=self.request_timeout,
+                max_providers=self.max_providers,
+            )
+        except Exception as exc:
+            print(f"  OPTIMADE registry fetch failed: {exc}")
+            self._providers = []
+
+        return self._providers
+
+    def _create_pymatgen_structure(self, attributes: Dict[str, Any]) -> Optional[PymatgenStructure]:
+        required_keys = {"lattice_vectors", "cartesian_site_positions", "species_at_sites"}
+        if not required_keys.issubset(attributes):
+            return None
+
+        lattice_vectors = attributes["lattice_vectors"]
+        cart_positions = attributes["cartesian_site_positions"]
+        site_species = attributes["species_at_sites"]
+
+        try:
+            from pymatgen.core.lattice import Lattice
+
+            lattice = Lattice(lattice_vectors)
+            return PymatgenStructure(lattice, site_species, cart_positions, coords_are_cartesian=True)
+        except Exception:
+            return None
+
+    def _convert_optimade_structure(self, entry: Dict[str, Any]) -> Optional[PymatgenStructure]:
+        if OptimadeStructure is None:
+            return None
+
+        attributes = entry.get("attributes", {}) if isinstance(entry.get("attributes"), dict) else {}
+        entry_for_conversion = entry
+        if "structure_features" not in attributes:
+            entry_for_conversion = {
+                **entry,
+                "attributes": {
+                    **attributes,
+                    "structure_features": [],
+                },
+            }
+        try:
+            structure = OptimadeStructure(entry_for_conversion).convert("pymatgen")
+            if isinstance(structure, PymatgenStructure):
+                return structure
+        except OptimadeConversionError as exc:
+            print(f"  OPTIMADE conversion error for {entry.get('id')}: {exc}")
+        except Exception as exc:
+            print(f"  OPTIMADE conversion failed for {entry.get('id')}: {exc}")
+        return None
+
+    def get_structures(
+        self,
+        formula: str,
+        limit: int = 10,
+        elements: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Search OPTIMADE providers for a given formula."""
+        providers = self._get_providers()
+        if not providers or limit <= 0:
+            return []
+
+        try:
+            requested_elements = normalize_elements(elements or []) if elements else []
+        except ValueError as exc:
+            print(f"  OPTIMADE query validation failed: {exc}")
+            return []
+
+        normalized_formula = self._normalize_formula(formula)
+        filter_str = (
+            _build_optimade_elements_filter(requested_elements)
+            if requested_elements
+            else f'chemical_formula_reduced="{normalized_formula}"'
+        )
+        available_props = get_available_properties("optimade")
+        results: List[Dict] = []
+
+        for provider in providers:
+
+            base_url = provider.get("base_url")
+            if not base_url:
+                continue
+
+            provider_id = provider.get("id") or base_url
+            provider_name = provider.get("name") or provider_id
+
+            page_limit = limit if not requested_elements else max(limit * 5, limit)
+            params = {"filter": filter_str, "page_limit": str(page_limit)}
+
+            try:
+                response = requests.get(
+                    f"{base_url.rstrip('/')}/v1/structures",
+                    params=params,
+                    timeout=self.request_timeout,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except Exception as exc:
+                print(f"  OPTIMADE query failed for {provider_id}: {exc}")
+                continue
+
+            entries = payload.get("data", []) if isinstance(payload, dict) else []
+            if not isinstance(entries, list):
+                continue
+
+            provider_result_count = 0
+            for entry in entries:
+                if provider_result_count >= limit:
+                    break
+                if not isinstance(entry, dict):
+                    continue
+
+                attributes = entry.get("attributes", {}) if isinstance(entry.get("attributes"), dict) else {}
+                if requested_elements and not contains_all_elements(
+                    attributes.get("chemical_formula_reduced", ""),
+                    requested_elements,
+                ):
+                    continue
+                full_data = {**entry, **attributes}
+
+                structure_data: Dict[str, Any] = {
+                    "database": "OPTIMADE",
+                    "source_database": provider_id,
+                    "provider_id": provider_id,
+                    "provider_name": provider_name,
+                    "provider_base_url": base_url,
+                }
+
+                for prop_name in available_props:
+                    value = get_property_value(full_data, "optimade", prop_name)
+                    if value is not None:
+                        structure_data[STANDARD_PROPERTIES[prop_name]] = value
+
+                structure = self._create_pymatgen_structure(attributes)
+                if structure is None:
+                    structure = self._convert_optimade_structure(entry)
+                if structure is not None:
+                    structure_data["structure"] = structure
+
+                results.append(structure_data)
+                provider_result_count += 1
+
+        return results
+
+    def save_cif(self, structure_data: Dict, filename: str) -> str:
+        """Save OPTIMADE structure as CIF file."""
+        cif_path = self.output_dir / f"{filename}.cif"
+
+        if "structure" in structure_data:
+            structure = structure_data["structure"]
+            cif_writer = CifWriter(structure)
+            cif_writer.write_file(str(cif_path))
+        else:
+            with open(cif_path, "w") as handle:
+                handle.write("# OPTIMADE structure\n")
+                handle.write(f"# Formula: {structure_data.get('formula', 'unknown')}\n")
+                handle.write(f"# Material ID: {structure_data.get('material_id', 'unknown')}\n")
+                handle.write(f"# Provider: {structure_data.get('provider_id', 'unknown')}\n")
+
+        metadata = {k: v for k, v in structure_data.items() if k != "structure"}
+        metadata_path = self.output_dir / f"{filename}_metadata.json"
+        with open(metadata_path, "w") as handle:
+            json.dump(metadata, handle, indent=2, default=str)
+
+        return str(cif_path)
+
+
 class MPDSClient(MaterialsDatabaseClient):
     """MPDS (Materials Platform for Data Science) database client."""
 
@@ -1053,17 +1403,30 @@ class MPDSClient(MaterialsDatabaseClient):
             raise ImportError("mpds-client is required for MPDS access")
         self.client = MPDSDataRetrieval(api_key=api_key)
     
-    def get_structures(self, formula: str, limit: int = 10) -> List[Dict]:
+    def get_structures(
+        self,
+        formula: str,
+        limit: int = 10,
+        elements: Optional[List[str]] = None,
+    ) -> List[Dict]:
         """Get structures from MPDS database"""
         try:
-            print(f"  Connecting to MPDS for {formula}...")
+            requested_elements = normalize_elements(elements or []) if elements else []
+        except ValueError as exc:
+            print(f"Error retrieving from MPDS: {exc}")
+            return []
+
+        query_label = format_chemsys(requested_elements) if requested_elements else formula
+        try:
+            print(f"  Connecting to MPDS for {query_label}...")
             
             # Search for materials with the given formula using simpler approach
             # MPDS API is quite specific about query format
-            query = {
-                "formulae": formula,
-                "props": "atomic structure"
-            }
+            query = {"props": "atomic structure"}
+            if requested_elements:
+                query["elements"] = "-".join(requested_elements)
+            else:
+                query["formulae"] = formula
             
             results = []
             
@@ -1088,45 +1451,50 @@ class MPDSClient(MaterialsDatabaseClient):
                     chem_formula = item.get('chemical_formula', '')
                     space_group = item.get('sg_n', '')
                     
-                    # Check if formula matches (allow some flexibility)
-                    if self._formula_matches(chem_formula, formula):
-                        # Create MPDS data structure for property mapping
-                        mpds_data = {
-                            'phase_id': phase_id,
-                            'entry': entry,
-                            'chemical_formula': chem_formula or formula,
-                            'sg_n': space_group,
-                        }
-                        
-                        # Use property mapping to extract standardized properties
-                        structure_data = {
-                            'database': 'MPDS'
-                        }
-                        
-                        # Get available properties for MPDS
-                        available_props = get_available_properties('mpds')
-                        
-                        # Extract all available properties using mapping
-                        for prop_name in available_props:
-                            value = get_property_value(mpds_data, 'mpds', prop_name)
-                            if value is not None:
-                                structure_data[STANDARD_PROPERTIES[prop_name]] = value
-                        
-                        # Add additional MPDS-specific fields
-                        structure_data['functional'] = 'Various (experimental and computational)'
-                        structure_data['phase_id'] = phase_id
-                        structure_data['source'] = 'MPDS - Materials Platform for Data Science'
-                        
-                        # Try to get structure if available
-                        try:
-                            structure = self._create_structure_from_mpds_data(item)
-                            if structure:
-                                structure_data['structure'] = structure
-                        except Exception as e:
-                            print(f"  Could not create structure: {e}")
-                        
-                        results.append(structure_data)
-                        count += 1
+                    # Check if formula/element criteria match
+                    if (
+                        requested_elements
+                        and not contains_all_elements(chem_formula or "", requested_elements)
+                    ):
+                        continue
+                    if (not requested_elements) and (not self._formula_matches(chem_formula, formula)):
+                        continue
+
+                    # Create MPDS data structure for property mapping
+                    mpds_data = {
+                        'phase_id': phase_id,
+                        'entry': entry,
+                        'chemical_formula': chem_formula or query_label,
+                        'sg_n': space_group,
+                    }
+
+                    # Use property mapping to extract standardized properties
+                    structure_data = {'database': 'MPDS'}
+
+                    # Get available properties for MPDS
+                    available_props = get_available_properties('mpds')
+
+                    # Extract all available properties using mapping
+                    for prop_name in available_props:
+                        value = get_property_value(mpds_data, 'mpds', prop_name)
+                        if value is not None:
+                            structure_data[STANDARD_PROPERTIES[prop_name]] = value
+
+                    # Add additional MPDS-specific fields
+                    structure_data['functional'] = 'Various (experimental and computational)'
+                    structure_data['phase_id'] = phase_id
+                    structure_data['source'] = 'MPDS - Materials Platform for Data Science'
+
+                    # Try to get structure if available
+                    try:
+                        structure = self._create_structure_from_mpds_data(item)
+                        if structure:
+                            structure_data['structure'] = structure
+                    except Exception as e:
+                        print(f"  Could not create structure: {e}")
+
+                    results.append(structure_data)
+                    count += 1
                 
                 print(f"  Found {len(results)} materials from MPDS")
                 return results
@@ -1134,19 +1502,33 @@ class MPDSClient(MaterialsDatabaseClient):
             except Exception as e:
                 print(f"  MPDS API error: {e}")
                 # Try alternative approach with different query
-                return self._get_structures_alternative(formula, limit)
+                return self._get_structures_alternative(
+                    formula,
+                    limit,
+                    elements=requested_elements or None,
+                )
             
         except Exception as e:
             print(f"Error retrieving from MPDS: {e}")
             # Fallback to simple approach
-            return self._get_structures_simple(formula, limit)
+            return self._get_structures_simple(
+                formula,
+                limit,
+                elements=requested_elements or None,
+            )
     
-    def _get_structures_alternative(self, formula: str, limit: int) -> List[Dict]:
+    def _get_structures_alternative(
+        self,
+        formula: str,
+        limit: int,
+        elements: Optional[List[str]] = None,
+    ) -> List[Dict]:
         """Alternative MPDS structure retrieval using different query format"""
         try:
             # Try phase diagram data which is more accessible
+            query_elements = normalize_elements(elements or []) if elements else None
             query = {
-                "elements": self._parse_formula_elements(formula),
+                "elements": "-".join(query_elements) if query_elements else self._parse_formula_elements(formula),
                 "classes": "binary",  # Try binary systems first
                 "props": "phase diagram"
             }
@@ -1168,38 +1550,49 @@ class MPDSClient(MaterialsDatabaseClient):
                 
                 phase_id = item.get('phase_id', '')
                 chem_formula = item.get('chemical_formula', '')
-                
-                if self._formula_matches(chem_formula, formula):
-                    structure_data = {
-                        'database': 'MPDS',
-                        'material_id': f"mpds_pd_{phase_id}" if phase_id else f"mpds_pd_{count+1}",
-                        'formula': chem_formula or formula,
-                        'functional': 'Various (experimental and computational)',
-                        'phase_id': phase_id,
-                        'source': 'MPDS - Materials Platform for Data Science',
-                        'note': 'Retrieved from phase diagram data'
-                    }
-                    results.append(structure_data)
-                    count += 1
+
+                if query_elements:
+                    if not contains_all_elements(chem_formula or "", query_elements):
+                        continue
+                elif not self._formula_matches(chem_formula, formula):
+                    continue
+
+                structure_data = {
+                    'database': 'MPDS',
+                    'material_id': f"mpds_pd_{phase_id}" if phase_id else f"mpds_pd_{count+1}",
+                    'formula': chem_formula or (format_chemsys(query_elements) if query_elements else formula),
+                    'functional': 'Various (experimental and computational)',
+                    'phase_id': phase_id,
+                    'source': 'MPDS - Materials Platform for Data Science',
+                    'note': 'Retrieved from phase diagram data'
+                }
+                results.append(structure_data)
+                count += 1
             
             if results:
                 print(f"  Found {len(results)} materials from MPDS (phase diagram data)")
                 return results
             else:
                 # Final fallback
-                return self._get_structures_simple(formula, limit)
+                return self._get_structures_simple(formula, limit, elements=query_elements)
                 
         except Exception as e:
             print(f"  MPDS alternative query error: {e}")
-            return self._get_structures_simple(formula, limit)
+            return self._get_structures_simple(formula, limit, elements=elements)
     
-    def _get_structures_simple(self, formula: str, limit: int) -> List[Dict]:
+    def _get_structures_simple(
+        self,
+        formula: str,
+        limit: int,
+        elements: Optional[List[str]] = None,
+    ) -> List[Dict]:
         """Simplified MPDS structure retrieval"""
         try:
+            formula_value = format_chemsys(elements) if elements else formula
             # Create simplified MPDS data for property mapping
             mpds_simple_data = {
-                'phase_id': f"mpds_{formula}_1",
-                'chemical_formula': formula,
+                'phase_id': f"mpds_{formula_value}_1",
+                'chemical_formula': formula_value,
             }
             
             # Use property mapping to extract standardized properties
@@ -1316,9 +1709,17 @@ class OQMDClient(MaterialsDatabaseClient):
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "mat-rev/1.0"})
 
-    def get_structures(self, formula: str, limit: int = 10) -> List[Dict]:
+    def get_structures(
+        self,
+        formula: str,
+        limit: int = 10,
+        elements: Optional[List[str]] = None,
+    ) -> List[Dict]:
         """Retrieve structures from OQMD formation energy endpoint."""
         if limit <= 0:
+            return []
+        if elements:
+            print("  OQMD element-set search is not supported reliably; skipping.")
             return []
 
         params = {
@@ -1503,6 +1904,15 @@ class MaterialsDatabaseRetriever:
             print("✓ Materials Cloud client initialized")
         except Exception as e:
             print(f"✗ Materials Cloud client failed: {e}")
+
+        # OPTIMADE (generic)
+        try:
+            self.clients['optimade'] = OptimadeSearchClient(
+                output_directory=self.output_directory,
+            )
+            print("✓ OPTIMADE client initialized")
+        except Exception as e:
+            print(f"✗ OPTIMADE client failed: {e}")
         
         # OQMD
         try:
@@ -1571,5 +1981,3 @@ class MaterialsDatabaseRetriever:
             print(f"  Successful databases: {successful_dbs}/{len(self.clients)}")
         
         return test_results
-
-

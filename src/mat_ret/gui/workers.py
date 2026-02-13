@@ -24,13 +24,19 @@ class FetchWorker(QThread):
                  limit: int = 10,
                  mp_api_key: Optional[str] = None,
                  mpds_api_key: Optional[str] = None,
+                 optimade_providers: Optional[List[Dict[str, str]]] = None,
+                 query_mode: str = "formula",
+                 elements: Optional[List[str]] = None,
                  parent=None):
         super().__init__(parent)
         self.formula = formula
+        self.query_mode = query_mode
+        self.elements = elements or []
         self.databases = databases
         self.limit = limit
         self.mp_api_key = mp_api_key
         self.mpds_api_key = mpds_api_key
+        self.optimade_providers = optimade_providers or []
         self._is_cancelled = False
     
     def cancel(self):
@@ -50,7 +56,8 @@ class FetchWorker(QThread):
                 fetch_alexandria,
                 fetch_materials_cloud,
                 fetch_oqmd,
-                fetch_mpds
+                fetch_mpds,
+                fetch_optimade,
             )
         except ImportError as e:
             self.error.emit("Import", f"Failed to import mat_ret: {e}")
@@ -64,40 +71,54 @@ class FetchWorker(QThread):
                 'requires_key': True,
                 'key_param': 'api_key',
                 'key_value': self.mp_api_key,
-                'display_name': 'Materials Project'
+                'display_name': 'Materials Project',
+                'supports_elements': True,
             },
             'jarvis': {
                 'func': fetch_jarvis,
                 'requires_key': False,
-                'display_name': 'JARVIS'
+                'display_name': 'JARVIS',
+                'supports_elements': True,
             },
             'aflow': {
                 'func': fetch_aflow,
                 'requires_key': False,
-                'display_name': 'AFLOW'
+                'display_name': 'AFLOW',
+                'supports_elements': True,
             },
             'alexandria': {
                 'func': fetch_alexandria,
                 'requires_key': False,
-                'display_name': 'Alexandria'
+                'display_name': 'Alexandria',
+                'supports_elements': True,
             },
             'materials_cloud': {
                 'func': fetch_materials_cloud,
                 'requires_key': False,
                 'extra_params': {'mp_api_key': self.mp_api_key} if self.mp_api_key else {},
-                'display_name': 'Materials Cloud'
+                'display_name': 'Materials Cloud',
+                'supports_elements': True,
             },
             'oqmd': {
                 'func': fetch_oqmd,
                 'requires_key': False,
-                'display_name': 'OQMD'
+                'display_name': 'OQMD',
+                'supports_elements': False,
             },
             'mpds': {
                 'func': fetch_mpds,
                 'requires_key': True,
                 'key_param': 'api_key',
                 'key_value': self.mpds_api_key,
-                'display_name': 'MPDS'
+                'display_name': 'MPDS',
+                'supports_elements': True,
+            },
+            'optimade': {
+                'func': fetch_optimade,
+                'requires_key': False,
+                'display_name': 'OPTIMADE',
+                'supports_elements': True,
+                'extra_params': {'providers': self.optimade_providers} if self.optimade_providers else {}
             }
         }
         
@@ -114,12 +135,23 @@ class FetchWorker(QThread):
             
             config = fetch_config[db_id]
             display_name = config['display_name']
+
+            if self.query_mode == "elements_all" and not config.get("supports_elements", False):
+                self.status_update.emit(
+                    f"{display_name} skipped for element-set search (no reliable native filter)."
+                )
+                results[db_id] = []
+                self.progress.emit(db_id, 0)
+                self.database_complete.emit(db_id, [])
+                continue
             
             self.status_update.emit(f"Fetching from {display_name}... ({i+1}/{total_dbs})")
             
             try:
                 # Build kwargs
                 kwargs = {'limit': self.limit}
+                if self.query_mode == "elements_all" and self.elements:
+                    kwargs["elements"] = list(self.elements)
                 
                 # Add API key if required
                 if config.get('requires_key'):

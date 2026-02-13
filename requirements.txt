@@ -5,6 +5,7 @@ scipy
 mp-api
 jarvis-tools
 optimade[http_client]
+zstandard
 ase
 aflow
 matplotlib

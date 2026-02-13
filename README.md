@@ -1,154 +1,221 @@
 # mat_ret
 
-**Unified retrieval and property mapping for materials databases**
-This project is intended to extract materials data from various databases (see the supported databases section) and have a single property identifier for clear and unambiguous understanding.
+Unified retrieval and property mapping for materials databases, with a PyQt6 GUI for materials search, structure viewing, and XRD generation.
 
-***Supported databases:***
-  1. MATERIALS PROJECT
-  2. JARVIS
-  3. AFLOW
-  4. ALEXANDRIA
-  5. MATERIALS CLOUD
-  6. MPDS
-  7. OQMD
+## Supported Databases
+
+1. Materials Project
+2. JARVIS
+3. AFLOW
+4. Alexandria
+5. Materials Cloud
+6. MPDS
+7. OQMD
+8. OPTIMADE providers (registry search)
 
 ## Installation
 
-Install in development mode:
-
-```bash
-pip install -e .
-```
-
-Or install as a package:
+Install as package:
 
 ```bash
 pip install .
 ```
 
+Install editable for development:
+
+```bash
+pip install -e .
+```
+
+Install editable with test dependencies:
+
+```bash
+pip install -e ".[dev]"
+```
+
 ## Quick Start
 
-1. **Configure API keys**
-   - Set `MP_API_KEY` and `MPDS_API_KEY` as environment variables or in `config.py`.
+1. Configure API keys (`MP_API_KEY`, `MPDS_API_KEY`) via environment variables or `config.py`.
+2. Run examples:
 
-2. **Run tests and examples**
-   - Full test suite:
-     ```bash
-     python comprehensive_database_test.py --formula Al2O3 --limit 2
-     ```
-   - Demo fetch:
-     ```bash
-     python example_fetch.py
-     ```
+```bash
+python example_fetch.py
+python example_single_fetch.py
+```
 
-3. **Library usage**
-   - High-level fetch helper:
-     ```python
-     from mat_ret.api import fetch_all_databases
+3. Use the Python API:
 
-     results = fetch_all_databases(
-         formula='MgO',
-         limit_per_database=3,
-         mp_api_key='YOUR_MP_KEY',
-         mpds_api_key='YOUR_MPDS_KEY'
-     )
-     print(results['materials_project'][0])
-     ```
+```python
+from mat_ret.api import fetch_all_databases
+
+results = fetch_all_databases(
+    formula="MgO",
+    limit_per_database=3,
+    mp_api_key="YOUR_MP_KEY",
+    mpds_api_key="YOUR_MPDS_KEY",
+)
+print(results["materials_project"][0])
+```
 
 ## Direct Client Usage
 
-Look into the example_single_fetch.py file to retive from a single database then save the information in json format and the sturcture in cif format.
-You can bypass the high-level helpers and use specific client classes from `mat_ret.databases`. For example, to fetch from Materials Project:
+You can call specific clients from `mat_ret.databases` directly:
 
 ```python
 from mat_ret.databases import MaterialsProjectClient
 
-# Initialize client with your API key
-client = MaterialsProjectClient(api_key='YOUR_MP_KEY')
-# Retrieve a single structure for MgO
-results = client.get_structures('MgO', limit=1)
+client = MaterialsProjectClient(api_key="YOUR_MP_KEY")
+results = client.get_structures("MgO", limit=1)
 if results:
     entry = results[0]
-    print(f"Material ID: {entry['material_id']}")
-    for key, value in entry.items():
-        if key != 'structure':
-            print(f"{key}: {value}")
-``` 
+    print(entry["material_id"])
+```
 
-## Running in a Virtual Environment (.venv)
+## OPTIMADE Search
 
-To isolate dependencies, create and activate a Python virtual environment in your project root:
+When OPTIMADE is selected in the GUI, providers are shown as a tree.
+Select the parent to toggle all providers or select individual providers.
+The search filter applies to each provider, and limit is applied per provider.
+
+## Running in a Virtual Environment
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e ".[dev]"
 ```
 
-Then run scripts using the environment's Python interpreter:
+## GUI
 
-```bash
-.venv/bin/python example_single_fetch.py
-.venv/bin/python example_fetch.py
-.venv/bin/python comprehensive_database_test.py --formula Al2O3 --limit 2
-```
-
-## Graphical User Interface (GUI)
-
-mat_ret includes a modern PyQt6-based graphical interface for easy materials retrieval.
+mat_ret includes a PyQt6 desktop GUI.
 
 ![mat_ret GUI Screenshot](doc/Screenshot.png?raw=true)
 
-### Launching the GUI
+### Launch GUI
 
 ```bash
-# After installation, use the command-line entry point:
 mat-ret-gui
-
-# Or using Python module syntax:
+# or
 python -m mat_ret.gui
 ```
 
 ### GUI Features
 
-- **Database Selection**: Checkbox interface to select which databases to query
-- **Composition Search**: Enter any chemical formula (e.g., MgO, Fe2O3, LiFePO4)
-- **Results Table**: Interactive table showing material properties from all selected databases
-- **Structure Viewer**: 3D/2D visualization of crystal structures
-  - Multiple view projections (3D, XY, XZ, YZ planes)
-  - Adjustable atom sizes
-  - Toggle bonds and unit cell display
-- **Export Options**: Save results as JSON/CSV, export structures as CIF files
+- Database selection and API key controls
+- OPTIMADE provider tree with per-provider toggles
+- Formula search (e.g., `Fe2O3`, `LiFePO4`) across selected databases
+- Element-set search via periodic-table picker icon next to the search box
+  - Chemsys text format: `Fe-O`, `Li-Fe-O`
+  - Element mode uses contains-all semantics
+  - Unsupported providers/databases are skipped with explicit status messages (e.g., OQMD)
+- Results table and JSON views
+- Structure viewer with CIF export
+- File menu exports (JSON/CSV)
+- Tools menu:
+  - XRD Generator
+
+## XRD Generator
+
+Open `Tools -> XRD Generator...` in the GUI.
+
+Capabilities:
+
+- Input sources:
+  - Any CIF file from disk
+  - Currently selected structure from the main results window
+- Radiation presets from pymatgen (including `CuKa`, `CuKa1`, `CuKa2`, etc.)
+- Optional custom wavelength (Angstrom)
+- Scan controls: `2theta min`, `2theta max`, `2theta step`
+- Profile controls:
+  - `Stick`
+  - `Gaussian`
+  - `Lorentzian`
+  - `Pseudo-Voigt` (with `eta`)
+- Peak broadening width control (`FWHM`, degrees in 2theta)
+- Peak finder controls using SciPy:
+  - minimum height
+  - prominence
+  - minimum distance
+  - minimum width
+  - theoretical peak match tolerance
+- Interactive plot view + peak table
+- Exports:
+  - plot (`PNG`, `SVG`, `PDF`)
+  - profile/stick CSV
+  - peaks CSV
+
+Defaults:
+
+- Radiation: `CuKa` (`1.54184 A`)
+- Scan range: `5` to `90` deg (2theta), step `0.02`
+- Profile: `Pseudo-Voigt`
+- FWHM: `0.15` deg
+- Eta: `0.5`
+
+Detailed XRD notes are in `doc/XRD_GENERATOR_GUIDE.md`.
+
+## XRD API
+
+```python
+from mat_ret import XRDConfig, generate_xrd_pattern_from_cif
+
+cfg = XRDConfig(
+    radiation="CuKa",
+    two_theta_min=5.0,
+    two_theta_max=90.0,
+    two_theta_step=0.02,
+    profile="pseudo_voigt",
+    fwhm=0.15,
+)
+
+result = generate_xrd_pattern_from_cif("example.cif", config=cfg)
+print(result.wavelength, len(result.peaks))
+```
+
+## Tests
+
+Run XRD tests:
+
+```bash
+pytest tests/test_xrd.py
+```
+
+Run all tests:
+
+```bash
+pytest
+```
 
 ## Project Structure
 
-```
+```text
 mat_ret/
-├── src/mat_ret/                # Core package code
-│   ├── api.py                  # High-level fetch helpers
-│   ├── property_mapping.py     # Mapping config and helpers
-│   └── databases.py            # Database client implementations
-├── gui/                        # Graphical user interface
-│   ├── main.py                 # GUI entry point
-│   ├── main_window.py          # Main application window
-│   ├── workers.py              # Async fetch workers
-│   ├── utils.py                # Utility functions and styling
-│   └── widgets/                # UI widgets
-│       ├── database_selector.py    # Database selection panel
-│       ├── results_view.py         # Results table and JSON view
-│       └── structure_viewer.py     # Crystal structure visualization
-├── doc/                        # Documentation assets (CSV, guides)
-├── example_fetch.py            # Demo script intended to retrieve information from all databases
-├── example_single_fetch.py     # Demo script intended to retrieve information from one database
-├── README.md                   # Project overview
-├── requirements.txt            # Python dependencies
-└── LICENSE                     # CeCILL license
+├── src/mat_ret/
+│   ├── api.py
+│   ├── databases.py
+│   ├── property_mapping.py
+│   ├── xrd.py
+│   └── gui/
+│       ├── main.py
+│       ├── main_window.py
+│       ├── workers.py
+│       ├── utils.py
+│       └── widgets/
+│           ├── database_selector.py
+│           ├── results_view.py
+│           ├── structure_viewer.py
+│           └── xrd_generator_window.py
+├── tests/
+│   └── test_xrd.py
+├── doc/
+│   ├── PROPERTY_MAPPING_GUIDE.md
+│   └── XRD_GENERATOR_GUIDE.md
+├── README.md
+├── pyproject.toml
+└── requirements.txt
 ```
 
 ## Contributing
 
-Keep in touch to contribute !!!
-We welcome others to develop/fix the functionalities of this python library with these existing databases and/or provide new databases.
+Issues and pull requests are welcome:
 https://github.com/Aadhityan-A/mat_ret
-
-*Note:* It's still in the developing phase. If you face any issues let us know through github issues. Also there are some lines of code not in use are for future development purpose.
