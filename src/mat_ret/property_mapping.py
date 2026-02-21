@@ -392,7 +392,7 @@ def export_property_mappings(filepath: str = 'property_mappings.json'):
         }
     }
     
-    with open(filepath, 'w') as f:
+    with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(export_data, f, indent=2)
     
     print(f"Property mappings exported to {filepath}")

@@ -44,7 +44,7 @@ filename_base = f"{client.database_name}_{MATERIAL}_1"
 
 # Save metadata JSON
 meta = {k: v for k, v in entry.items() if k != 'structure'}
-with open(out_root / f"{filename_base}_metadata.json", 'w') as jf:
+with open(out_root / f"{filename_base}_metadata.json", 'w', encoding='utf-8') as jf:
     json.dump(meta, jf, indent=2, default=str)
 print(f"Metadata saved to {out_root / (filename_base + '_metadata.json')}")
 

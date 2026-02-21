@@ -340,7 +340,8 @@ class DatabaseSelectorWidget(QWidget):
         """Load API keys from config if available."""
         try:
             import sys
-            sys.path.insert(0, str(__file__).rsplit('/gui', 1)[0])
+            from pathlib import Path
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
             from config import MP_API_KEY, MPDS_API_KEY
 
             if MP_API_KEY:
@@ -357,7 +358,8 @@ class DatabaseSelectorWidget(QWidget):
 
         try:
             import sys
-            sys.path.insert(0, str(__file__).rsplit('/gui', 1)[0])
+            from pathlib import Path
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
             from config import OPTIMADE_REGISTRY_URL
         except Exception:
             OPTIMADE_REGISTRY_URL = None

@@ -560,7 +560,7 @@ class ResultsViewWidget(QWidget):
                 
                 cleaned = clean_for_export(self.results_data)
                 
-                with open(filename, 'w') as f:
+                with open(filename, 'w', encoding='utf-8') as f:
                     json.dump(cleaned, f, indent=2, default=str)
                 
                 QMessageBox.information(self, "Export Successful", 
@@ -596,7 +596,7 @@ class ResultsViewWidget(QWidget):
                 if all_materials:
                     headers = ['database'] + [col[0] for col in SUMMARY_COLUMNS]
                     
-                    with open(filename, 'w', newline='') as f:
+                    with open(filename, 'w', newline='', encoding='utf-8') as f:
                         writer = csv.DictWriter(f, fieldnames=headers)
                         writer.writeheader()
                         writer.writerows(all_materials)

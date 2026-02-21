@@ -191,7 +191,7 @@ class MaterialsProjectClient(MaterialsDatabaseClient):
         # Save metadata
         metadata = {k: v for k, v in structure_data.items() if k != 'structure'}
         metadata_path = self.output_dir / f"{filename}_metadata.json"
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, default=str)
         
         return str(cif_path)
@@ -270,7 +270,7 @@ class JARVISClient(MaterialsDatabaseClient):
         # Save metadata
         metadata = {k: v for k, v in structure_data.items() if k != 'structure'}
         metadata_path = self.output_dir / f"{filename}_metadata.json"
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, default=str)
         
         return str(cif_path)
@@ -533,7 +533,7 @@ class AFLOWClient(MaterialsDatabaseClient):
             cif_writer.write_file(str(cif_path))
         else:
             # Create placeholder CIF with metadata
-            with open(cif_path, 'w') as f:
+            with open(cif_path, 'w', encoding='utf-8') as f:
                 f.write(f"# AFLOW structure for {structure_data.get('formula', 'unknown')}\n")
                 f.write(f"# Material ID: {structure_data.get('material_id', 'unknown')}\n")
                 f.write(f"# Structure data not available in current format\n")
@@ -541,7 +541,7 @@ class AFLOWClient(MaterialsDatabaseClient):
         # Save metadata
         metadata = {k: v for k, v in structure_data.items() if k != 'structure'}
         metadata_path = self.output_dir / f"{filename}_metadata.json"
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, default=str)
         
         return str(cif_path)
@@ -669,7 +669,7 @@ class AlexandriaClient(MaterialsDatabaseClient):
             cif_writer.write_file(str(cif_path))
         else:
             # Create CIF from OPTIMADE data if available
-            with open(cif_path, 'w') as f:
+            with open(cif_path, 'w', encoding='utf-8') as f:
                 f.write(f"# Alexandria structure\n")
                 f.write(f"# Formula: {structure_data.get('formula', 'unknown')}\n")
                 f.write(f"# Material ID: {structure_data.get('material_id', 'unknown')}\n")
@@ -683,7 +683,7 @@ class AlexandriaClient(MaterialsDatabaseClient):
         # Save metadata
         metadata = {k: v for k, v in structure_data.items() if k != 'structure'}
         metadata_path = self.output_dir / f"{filename}_metadata.json"
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, default=str)
         
         return str(cif_path)
@@ -1141,7 +1141,7 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
             cif_writer.write_file(str(cif_path))
         else:
             # Create CIF from OPTIMADE data if available
-            with open(cif_path, 'w') as f:
+            with open(cif_path, 'w', encoding='utf-8') as f:
                 f.write(f"# Materials Cloud structure\n")
                 f.write(f"# Formula: {structure_data.get('formula', 'unknown')}\n")
                 f.write(f"# Material ID: {structure_data.get('material_id', 'unknown')}\n")
@@ -1158,7 +1158,7 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
         # Save metadata
         metadata = {k: v for k, v in structure_data.items() if k != 'structure'}
         metadata_path = self.output_dir / f"{filename}_metadata.json"
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, default=str)
         
         return str(cif_path)
@@ -1379,7 +1379,7 @@ class OptimadeSearchClient(MaterialsDatabaseClient):
             cif_writer = CifWriter(structure)
             cif_writer.write_file(str(cif_path))
         else:
-            with open(cif_path, "w") as handle:
+            with open(cif_path, "w", encoding="utf-8") as handle:
                 handle.write("# OPTIMADE structure\n")
                 handle.write(f"# Formula: {structure_data.get('formula', 'unknown')}\n")
                 handle.write(f"# Material ID: {structure_data.get('material_id', 'unknown')}\n")
@@ -1387,7 +1387,7 @@ class OptimadeSearchClient(MaterialsDatabaseClient):
 
         metadata = {k: v for k, v in structure_data.items() if k != "structure"}
         metadata_path = self.output_dir / f"{filename}_metadata.json"
-        with open(metadata_path, "w") as handle:
+        with open(metadata_path, "w", encoding="utf-8") as handle:
             json.dump(metadata, handle, indent=2, default=str)
 
         return str(cif_path)
@@ -1681,7 +1681,7 @@ class MPDSClient(MaterialsDatabaseClient):
             cif_writer.write_file(str(cif_path))
         else:
             # Create placeholder CIF with metadata
-            with open(cif_path, 'w') as f:
+            with open(cif_path, 'w', encoding='utf-8') as f:
                 f.write(f"# MPDS structure\n")
                 f.write(f"# Formula: {structure_data.get('formula', 'unknown')}\n")
                 f.write(f"# Material ID: {structure_data.get('material_id', 'unknown')}\n")
@@ -1693,7 +1693,7 @@ class MPDSClient(MaterialsDatabaseClient):
         # Save metadata
         metadata = {k: v for k, v in structure_data.items() if k != 'structure'}
         metadata_path = self.output_dir / f"{filename}_metadata.json"
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, default=str)
         
         return str(cif_path)
@@ -1828,7 +1828,7 @@ class OQMDClient(MaterialsDatabaseClient):
             cif_writer = CifWriter(structure)
             cif_writer.write_file(str(cif_path))
         else:
-            with open(cif_path, "w") as handle:
+            with open(cif_path, "w", encoding="utf-8") as handle:
                 handle.write(f"# OQMD structure for {structure_data.get('formula', 'unknown')}\n")
                 handle.write(f"# Material ID: {structure_data.get('material_id', 'unknown')}\n")
                 unit_cell = structure_data.get("oqmd_unit_cell")
@@ -1840,7 +1840,7 @@ class OQMDClient(MaterialsDatabaseClient):
 
         metadata = {k: v for k, v in structure_data.items() if k != "structure"}
         metadata_path = self.output_dir / f"{filename}_metadata.json"
-        with open(metadata_path, "w") as handle:
+        with open(metadata_path, "w", encoding="utf-8") as handle:
             json.dump(metadata, handle, indent=2, default=str)
 
         return str(cif_path)
