@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mat_ret"
-version = "0.3.0"
+version = "0.3.1"
 description = "Unified retrieval and property mapping for materials databases (Materials Project, JARVIS, AFLOW, Alexandria, Materials Cloud, MPDS)"
 authors = [
     { name = "Aadhityan A", email = "aadhityan1995@gmail.com" }
