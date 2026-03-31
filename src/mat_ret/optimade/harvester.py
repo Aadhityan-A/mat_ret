@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import re
 import tarfile
@@ -32,6 +33,8 @@ except ImportError:
 from pymatgen.io.cif import CifWriter
 from pymatgen.core.structure import Structure as PymatgenStructure
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class HarvestProgress:
@@ -51,12 +54,16 @@ class TarZstdShardWriter:
         self.target_path = target_path
         self.temp_path = target_path.with_suffix(target_path.suffix + ".part")
         self.temp_path.parent.mkdir(parents=True, exist_ok=True)
+        self._closed = False
 
         self._file = self.temp_path.open("wb")
-        self._compressor = zstd.ZstdCompressor(level=compression_level)
-        self._stream = self._compressor.stream_writer(self._file)
-        self._tar = tarfile.open(fileobj=self._stream, mode="w|")
-        self._closed = False
+        try:
+            self._compressor = zstd.ZstdCompressor(level=compression_level)
+            self._stream = self._compressor.stream_writer(self._file)
+            self._tar = tarfile.open(fileobj=self._stream, mode="w|")
+        except Exception:
+            self._file.close()
+            raise
 
     def add_bytes(self, arcname: str, payload: bytes) -> None:
         info = tarfile.TarInfo(name=arcname)
@@ -136,7 +143,21 @@ class OptimadeHarvester:
             adapter = requests.adapters.HTTPAdapter(max_retries=retry)
             session.mount("http://", adapter)
             session.mount("https://", adapter)
+            self._owns_session = True
+        else:
+            self._owns_session = False
         self.session = session
+
+    def close(self) -> None:
+        """Close the underlying HTTP session if we own it."""
+        if self._owns_session:
+            self.session.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
 
     def harvest(
         self,

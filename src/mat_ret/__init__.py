@@ -20,6 +20,7 @@ from .property_mapping import (
     standardize_properties,
     export_property_mappings,
 )
+from .search import SearchFilters
 from .api import (
     fetch_materials_project,
     fetch_jarvis,
@@ -37,6 +38,7 @@ from .api import (
     list_xrd_radiations,
 )
 from .xrd import XRDConfig, XRDPeak, XRDResult, export_xrd_pattern_csv, export_xrd_peaks_csv
+from .storage import StorageBackend, FileStorage, SQLiteStorage, MongoDBStorage, get_storage, StorageType
 
 __all__ = [
     "MaterialsDatabaseClient",
@@ -55,6 +57,7 @@ __all__ = [
     "get_property_value",
     "standardize_properties",
     "export_property_mappings",
+    "SearchFilters",
     "fetch_materials_project",
     "fetch_jarvis",
     "fetch_aflow",
@@ -74,4 +77,10 @@ __all__ = [
     "XRDResult",
     "export_xrd_pattern_csv",
     "export_xrd_peaks_csv",
+    "StorageBackend",
+    "FileStorage",
+    "SQLiteStorage",
+    "MongoDBStorage",
+    "get_storage",
+    "StorageType",
 ]

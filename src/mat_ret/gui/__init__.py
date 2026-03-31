@@ -11,10 +11,17 @@ Usage:
     # Or programmatically:
     from mat_ret.gui import main
     main()
+
+Requires the ``gui`` extra: ``pip install mat_ret[gui]``
 """
 
 __version__ = "1.0.0"
 
-from .main import main
+
+def main():
+    """Launch the GUI application (lazy import to avoid hard PyQt6 dependency)."""
+    from .main import main as _main
+    return _main()
+
 
 __all__ = ["main"]

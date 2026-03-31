@@ -66,8 +66,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
 
     try:
-        import config  # type: ignore
-        default_registry = getattr(config, "OPTIMADE_REGISTRY_URL", None)
+        from .._config_loader import get_config_value
+        default_registry = get_config_value("OPTIMADE_REGISTRY_URL")
     except ImportError:
         default_registry = None
 

@@ -7,12 +7,14 @@ Provides a tree view for selecting which materials databases to query.
 from typing import Dict, List, Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
+    QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QSpinBox, QPushButton,
     QFrame, QFormLayout, QTreeWidget, QTreeWidgetItem
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QThread
 from PyQt6.QtGui import QFont
+
+from .collapsible import CollapsibleSection
 
 
 # Database configuration with metadata
@@ -119,46 +121,34 @@ class DatabaseSelectorWidget(QWidget):
     def _setup_ui(self):
         """Set up the user interface."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(15)
+        layout.setContentsMargins(10, 6, 10, 10)
+        layout.setSpacing(4)
 
         # Title
-        title = QLabel("📊 Database Selection")
-        title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        title.setStyleSheet("color: #1976D2; margin-bottom: 10px;")
-        layout.addWidget(title)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(2, 4, 2, 6)
+        title = QLabel("Database Selection")
+        title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        title.setStyleSheet("color: #1565C0;")
+        title_row.addWidget(title)
+        title_row.addStretch()
+        layout.addLayout(title_row)
 
-        # Databases Group
-        db_group = QGroupBox("Select Databases")
-        db_group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                font-size: 12px;
-                border: 2px solid #e0e0e0;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-        """)
-        db_layout = QVBoxLayout(db_group)
-        db_layout.setSpacing(8)
+        # --- Databases Section (collapsible, expanded) ---
+        db_sec = CollapsibleSection("Databases", icon="📊", expanded=True)
+        db_lay = db_sec.content_layout()
 
         self.database_tree = QTreeWidget()
         self.database_tree.setHeaderHidden(True)
         self.database_tree.setStyleSheet("""
             QTreeWidget {
-                border: 1px solid #ddd;
+                border: 1px solid #e0e0e0;
                 border-radius: 6px;
-                background-color: white;
+                background-color: #fafbfc;
                 font-size: 11px;
             }
             QTreeWidget::item {
-                padding: 6px 5px;
+                padding: 4px 5px;
             }
             QTreeWidget::item:selected {
                 background-color: #e3f2fd;
@@ -190,164 +180,117 @@ class DatabaseSelectorWidget(QWidget):
                 loading_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "optimade_loading"})
                 item.addChild(loading_item)
 
-        db_layout.addWidget(self.database_tree)
-        layout.addWidget(db_group)
+        db_lay.addWidget(self.database_tree)
 
-        # Quick selection buttons
+        # Quick selection buttons — compact pill style
         btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(0, 4, 0, 0)
+
+        _pill_green = """
+            QPushButton {
+                background-color: transparent; color: #2e7d32;
+                border: 1.5px solid #a5d6a7; padding: 3px 12px;
+                border-radius: 12px; font-size: 10px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e8f5e9; border-color: #2e7d32; }
+        """
+        _pill_red = """
+            QPushButton {
+                background-color: transparent; color: #c62828;
+                border: 1.5px solid #ef9a9a; padding: 3px 12px;
+                border-radius: 12px; font-size: 10px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #ffebee; border-color: #c62828; }
+        """
 
         select_all_btn = QPushButton("Select All")
-        select_all_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                border: none;
-                padding: 5px 15px;
-                border-radius: 4px;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
+        select_all_btn.setStyleSheet(_pill_green)
+        select_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         select_all_btn.clicked.connect(self._select_all)
         btn_layout.addWidget(select_all_btn)
 
         select_none_btn = QPushButton("Clear All")
-        select_none_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #f44336;
-                color: white;
-                border: none;
-                padding: 5px 15px;
-                border-radius: 4px;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #da190b;
-            }
-        """)
+        select_none_btn.setStyleSheet(_pill_red)
+        select_none_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         select_none_btn.clicked.connect(self._select_none)
         btn_layout.addWidget(select_none_btn)
 
-        layout.addLayout(btn_layout)
+        btn_layout.addStretch()
+        db_lay.addLayout(btn_layout)
 
-        # Separator
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet("background-color: #e0e0e0;")
-        layout.addWidget(separator)
+        layout.addWidget(db_sec)
 
-        # API Keys Group
-        api_group = QGroupBox("🔑 API Keys")
-        api_group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                font-size: 12px;
-                border: 2px solid #e0e0e0;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 10px;
+        # --- API Keys Section (collapsible, collapsed) ---
+        api_sec = CollapsibleSection("API Keys", icon="🔑", expanded=False)
+        api_lay = api_sec.content_layout()
+
+        api_form = QFormLayout()
+        api_form.setSpacing(8)
+        api_form.setContentsMargins(0, 0, 0, 0)
+
+        _key_ss = """
+            QLineEdit {
+                padding: 6px 8px; border: 1px solid #d0d5dd;
+                border-radius: 4px; font-size: 11px; background: #fafbfc;
             }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-        """)
-        api_layout = QFormLayout(api_group)
-        api_layout.setSpacing(10)
+            QLineEdit:focus { border: 1.5px solid #1976D2; background: white; }
+        """
 
-        # Materials Project API Key
         mp_key_input = QLineEdit()
         mp_key_input.setPlaceholderText("Enter Materials Project API key")
         mp_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        mp_key_input.setStyleSheet("""
-            QLineEdit {
-                padding: 8px;
-                border: 1px solid #ccc;
-                border-radius: 4px;
-                font-size: 11px;
-            }
-            QLineEdit:focus {
-                border: 2px solid #2196F3;
-            }
-        """)
+        mp_key_input.setStyleSheet(_key_ss)
         self.api_key_inputs['materials_project'] = mp_key_input
-        api_layout.addRow("MP Key:", mp_key_input)
+        api_form.addRow("MP Key:", mp_key_input)
 
-        # MPDS API Key
         mpds_key_input = QLineEdit()
         mpds_key_input.setPlaceholderText("Enter MPDS API key")
         mpds_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        mpds_key_input.setStyleSheet("""
-            QLineEdit {
-                padding: 8px;
-                border: 1px solid #ccc;
-                border-radius: 4px;
-                font-size: 11px;
-            }
-            QLineEdit:focus {
-                border: 2px solid #E91E63;
-            }
-        """)
+        mpds_key_input.setStyleSheet(_key_ss)
         self.api_key_inputs['mpds'] = mpds_key_input
-        api_layout.addRow("MPDS Key:", mpds_key_input)
+        api_form.addRow("MPDS Key:", mpds_key_input)
 
-        layout.addWidget(api_group)
+        api_lay.addLayout(api_form)
+        layout.addWidget(api_sec)
 
-        # Search Settings Group
-        settings_group = QGroupBox("⚙️ Search Settings")
-        settings_group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                font-size: 12px;
-                border: 2px solid #e0e0e0;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-            }
-        """)
-        settings_layout = QFormLayout(settings_group)
-        settings_layout.setSpacing(10)
+        # --- Search Settings Section (collapsible, collapsed) ---
+        settings_sec = CollapsibleSection("Search Settings", icon="⚙️", expanded=False)
+        settings_lay = settings_sec.content_layout()
 
-        # Results limit spinner
+        settings_form = QFormLayout()
+        settings_form.setSpacing(8)
+        settings_form.setContentsMargins(0, 0, 0, 0)
+
         self.limit_spinner = QSpinBox()
         self.limit_spinner.setRange(1, 100)
         self.limit_spinner.setValue(10)
         self.limit_spinner.setSuffix(" results")
         self.limit_spinner.setStyleSheet("""
             QSpinBox {
-                padding: 5px;
-                border: 1px solid #ccc;
-                border-radius: 4px;
-                font-size: 11px;
+                padding: 4px 6px; border: 1px solid #d0d5dd;
+                border-radius: 4px; font-size: 11px; background: #fafbfc;
             }
+            QSpinBox:focus { border: 1.5px solid #1976D2; background: white; }
         """)
-        settings_layout.addRow("Limit per DB:", self.limit_spinner)
+        settings_form.addRow("Limit per DB:", self.limit_spinner)
 
-        layout.addWidget(settings_group)
+        settings_lay.addLayout(settings_form)
+        layout.addWidget(settings_sec)
 
-        # Add stretch at the bottom
         layout.addStretch()
 
     def _load_saved_keys(self):
         """Load API keys from config if available."""
         try:
-            import sys
-            from pathlib import Path
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-            from config import MP_API_KEY, MPDS_API_KEY
+            from ..._config_loader import get_config_value
 
-            if MP_API_KEY:
-                self.api_key_inputs['materials_project'].setText(MP_API_KEY)
-            if MPDS_API_KEY:
-                self.api_key_inputs['mpds'].setText(MPDS_API_KEY)
+            mp_key = get_config_value("MP_API_KEY", "")
+            mpds_key = get_config_value("MPDS_API_KEY", "")
+
+            if mp_key:
+                self.api_key_inputs['materials_project'].setText(mp_key)
+            if mpds_key:
+                self.api_key_inputs['mpds'].setText(mpds_key)
         except (ImportError, AttributeError):
             pass
 
@@ -357,10 +300,8 @@ class DatabaseSelectorWidget(QWidget):
             return
 
         try:
-            import sys
-            from pathlib import Path
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-            from config import OPTIMADE_REGISTRY_URL
+            from ..._config_loader import get_config_value
+            OPTIMADE_REGISTRY_URL = get_config_value("OPTIMADE_REGISTRY_URL")
         except Exception:
             OPTIMADE_REGISTRY_URL = None
 

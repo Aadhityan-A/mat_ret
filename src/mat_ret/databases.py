@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
@@ -10,32 +11,33 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 import requests
 import re
 
+logger = logging.getLogger(__name__)
+
 # Third-party imports
 try:
     from mp_api.client import MPRester
 except ImportError:
-    print("Warning: mp-api not installed. Materials Project access will be limited.")
+    logger.warning("mp-api not installed. Materials Project access will be limited.")
     MPRester = None
 
 try:
     from jarvis.db.figshare import data
     from jarvis.core.atoms import Atoms as JarvisAtoms
 except ImportError:
-    print("Warning: jarvis-tools not installed. JARVIS access will be limited.")
+    logger.warning("jarvis-tools not installed. JARVIS access will be limited.")
     data = None
     JarvisAtoms = None
-
 
 try:
     import aflow
 except ImportError:
-    print("Warning: aflow not installed. AFLOW access will be limited.")
+    logger.warning("aflow not installed. AFLOW access will be limited.")
     aflow = None
 
 try:
     from mpds_client import MPDSDataRetrieval
 except ImportError:
-    print("Warning: mpds-client not installed. MPDS access will be limited.")
+    logger.warning("mpds-client not installed. MPDS access will be limited.")
     MPDSDataRetrieval = None
 
 try:
@@ -43,7 +45,7 @@ try:
     from optimade.adapters.structures import Structure as OptimadeStructure
     from optimade.adapters.exceptions import ConversionError as OptimadeConversionError
 except ImportError:
-    print("Warning: optimade client extras not installed. Materials Cloud access will be limited.")
+    logger.warning("optimade client extras not installed. Materials Cloud access will be limited.")
     OptimadeClient = None
     OptimadeStructure = None
     OptimadeConversionError = Exception
@@ -60,17 +62,20 @@ from .property_mapping import (
     DATABASE_PROPERTY_MAPPINGS,
 )
 from .optimade.registry import fetch_registry_links
-from .search import contains_all_elements, format_chemsys, normalize_elements
-
+from .search import (
+    SearchFilters,
+    apply_post_filters,
+    contains_all_elements,
+    format_chemsys,
+    normalize_elements,
+)
 
 AFLOW_REST_URL = os.getenv("AFLOW_BASE_URL", "http://aflowlib.duke.edu/search/API/")
-
 
 def _build_optimade_elements_filter(elements: Iterable[str]) -> str:
     normalized = normalize_elements(elements)
     quoted = ", ".join(f'"{symbol}"' for symbol in normalized)
     return f"elements HAS ALL {quoted}"
-
 
 class MaterialsDatabaseClient:
     """Base class for materials database clients."""
@@ -86,6 +91,7 @@ class MaterialsDatabaseClient:
         formula: str,
         limit: int = 10,
         elements: Optional[List[str]] = None,
+        filters: Optional[SearchFilters] = None,
     ) -> List[Dict]:
         """Get structures for a given formula"""
         raise NotImplementedError
@@ -93,7 +99,6 @@ class MaterialsDatabaseClient:
     def save_cif(self, structure_data: Dict, filename: str) -> str:
         """Save structure as CIF file"""
         raise NotImplementedError
-
 
 class MaterialsProjectClient(MaterialsDatabaseClient):
     """Materials Project database client."""
@@ -110,12 +115,13 @@ class MaterialsProjectClient(MaterialsDatabaseClient):
         formula: str,
         limit: int = 10,
         elements: Optional[List[str]] = None,
+        filters: Optional[SearchFilters] = None,
     ) -> List[Dict]:
         """Get structures from Materials Project with GGA PBE functional."""
         try:
             requested_elements = normalize_elements(elements or []) if elements else []
         except ValueError as exc:
-            print(f"Error retrieving from Materials Project: {exc}")
+            logger.error(f"retrieving from Materials Project: {exc}")
             return []
 
         try:
@@ -146,6 +152,61 @@ class MaterialsProjectClient(MaterialsDatabaseClient):
             else:
                 search_kwargs["formula"] = formula
 
+            # Apply server-side filters supported by the MP API
+            if filters is not None:
+                if filters.exclude_theoretical:
+                    search_kwargs["theoretical"] = False
+                if filters.band_gap_min is not None or filters.band_gap_max is not None:
+                    search_kwargs["band_gap"] = (
+                        filters.band_gap_min if filters.band_gap_min is not None else 0,
+                        filters.band_gap_max if filters.band_gap_max is not None else None,
+                    )
+                if filters.is_metal is not None:
+                    search_kwargs["is_metal"] = filters.is_metal
+                if filters.is_stable is True:
+                    search_kwargs["is_stable"] = True
+                if filters.energy_above_hull_max is not None:
+                    search_kwargs["energy_above_hull"] = (
+                        None,
+                        filters.energy_above_hull_max,
+                    )
+                if filters.formation_energy_min is not None or filters.formation_energy_max is not None:
+                    search_kwargs["formation_energy"] = (
+                        filters.formation_energy_min,
+                        filters.formation_energy_max,
+                    )
+                if filters.density_min is not None or filters.density_max is not None:
+                    search_kwargs["density"] = (
+                        filters.density_min,
+                        filters.density_max,
+                    )
+                if filters.volume_min is not None or filters.volume_max is not None:
+                    search_kwargs["volume"] = (
+                        filters.volume_min,
+                        filters.volume_max,
+                    )
+                if filters.crystal_system is not None:
+                    search_kwargs["crystal_system"] = filters.crystal_system.capitalize()
+                if filters.space_group_number is not None:
+                    search_kwargs["spacegroup_number"] = filters.space_group_number
+                if filters.magnetic_ordering is not None:
+                    search_kwargs["magnetic_ordering"] = filters.magnetic_ordering
+                if filters.total_magnetization_min is not None or filters.total_magnetization_max is not None:
+                    search_kwargs["total_magnetization"] = (
+                        filters.total_magnetization_min,
+                        filters.total_magnetization_max,
+                    )
+                if filters.num_elements_min is not None or filters.num_elements_max is not None:
+                    search_kwargs["num_elements"] = (
+                        filters.num_elements_min,
+                        filters.num_elements_max,
+                    )
+                if filters.num_sites_min is not None or filters.num_sites_max is not None:
+                    search_kwargs["num_sites"] = (
+                        filters.num_sites_min,
+                        filters.num_sites_max,
+                    )
+
             docs = self.client.materials.summary.search(**search_kwargs)
 
             results = []
@@ -174,9 +235,11 @@ class MaterialsProjectClient(MaterialsDatabaseClient):
                 structure_data['source_database'] = 'Materials Project'
                 results.append(structure_data)
 
+            # Post-filter for properties MP API doesn't natively filter (moduli)
+            results = apply_post_filters(results, filters, STANDARD_PROPERTIES)
             return results
         except Exception as e:
-            print(f"Error retrieving from Materials Project: {e}")
+            logger.error(f"retrieving from Materials Project: {e}")
             return []
     
     def save_cif(self, structure_data: Dict, filename: str) -> str:
@@ -196,7 +259,6 @@ class MaterialsProjectClient(MaterialsDatabaseClient):
         
         return str(cif_path)
 
-
 class JARVISClient(MaterialsDatabaseClient):
     """JARVIS database client."""
 
@@ -210,12 +272,13 @@ class JARVISClient(MaterialsDatabaseClient):
         formula: str,
         limit: int = 10,
         elements: Optional[List[str]] = None,
+        filters: Optional[SearchFilters] = None,
     ) -> List[Dict]:
         """Get structures from JARVIS-DFT database."""
         try:
             requested_elements = normalize_elements(elements or []) if elements else []
         except ValueError as exc:
-            print(f"Error retrieving from JARVIS: {exc}")
+            logger.error(f"retrieving from JARVIS: {exc}")
             return []
 
         try:
@@ -253,9 +316,9 @@ class JARVISClient(MaterialsDatabaseClient):
                 structure_data['source_database'] = 'JARVIS'
                 results.append(structure_data)
 
-            return results
+            return apply_post_filters(results, filters, STANDARD_PROPERTIES)
         except Exception as e:
-            print(f"Error retrieving from JARVIS: {e}")
+            logger.error(f"retrieving from JARVIS: {e}")
             return []
     
     def save_cif(self, structure_data: Dict, filename: str) -> str:
@@ -275,7 +338,6 @@ class JARVISClient(MaterialsDatabaseClient):
         
         return str(cif_path)
 
-
 class AFLOWClient(MaterialsDatabaseClient):
     """AFLOW database client."""
 
@@ -284,7 +346,7 @@ class AFLOWClient(MaterialsDatabaseClient):
     def __init__(self, output_directory: Optional[Path] = None):
         super().__init__("aflow", output_directory=output_directory)
         if aflow is None:
-            print("Warning: aflow package not available, using REST API")
+            logger.warning("aflow package not available, using REST API")
     
     @classmethod
     def _get_schema_fields(cls) -> Optional[set[str]]:
@@ -302,7 +364,7 @@ class AFLOWClient(MaterialsDatabaseClient):
                 if isinstance(data, dict):
                     cls._schema_fields = set(data.keys())
             except Exception as exc:
-                print(f"  AFLOW schema fetch failed: {exc}")
+                logger.warning(f"AFLOW schema fetch failed: {exc}")
                 return None
         return cls._schema_fields
 
@@ -311,14 +373,15 @@ class AFLOWClient(MaterialsDatabaseClient):
         formula: str,
         limit: int = 10,
         elements: Optional[List[str]] = None,
+        filters: Optional[SearchFilters] = None,
     ) -> List[Dict]:
         """Get structures from AFLOW database"""
         try:
             # Use REST API approach (aflow package has API issues)
-            return self._get_structures_rest_api(formula, limit, elements=elements)
+            return self._get_structures_rest_api(formula, limit, elements=elements, filters=filters)
                 
         except Exception as e:
-            print(f"Error retrieving from AFLOW: {e}")
+            logger.error(f"retrieving from AFLOW: {e}")
             return []
     
     def _get_structures_rest_api(
@@ -327,6 +390,7 @@ class AFLOWClient(MaterialsDatabaseClient):
         limit: int,
         *,
         elements: Optional[List[str]] = None,
+        filters: Optional[SearchFilters] = None,
     ) -> List[Dict]:
         """Get structures using AFLOW REST API."""
         results: List[Dict] = []
@@ -379,6 +443,22 @@ class AFLOWClient(MaterialsDatabaseClient):
         ]
         if not elements:
             query_parts.append(f"nspecies({len(unique_species)})")
+
+        # AFLOW server-side numeric range filters
+        if filters is not None:
+            if filters.band_gap_min is not None and filters.band_gap_max is not None:
+                query_parts.append(f"Egap({filters.band_gap_min},{filters.band_gap_max})")
+            elif filters.band_gap_min is not None:
+                query_parts.append(f"Egap({filters.band_gap_min},*)")
+            elif filters.band_gap_max is not None:
+                query_parts.append(f"Egap(*,{filters.band_gap_max})")
+            if filters.space_group_number is not None:
+                query_parts.append(f"spacegroup_relax({filters.space_group_number})")
+            if filters.num_elements_min is not None or filters.num_elements_max is not None:
+                lo = filters.num_elements_min or 1
+                hi = filters.num_elements_max or "*"
+                query_parts.append(f"nspecies({lo},{hi})")
+
         query_parts.extend(sorted(requested_fields))
 
         base_url = AFLOW_REST_URL.rstrip('/')
@@ -393,7 +473,7 @@ class AFLOWClient(MaterialsDatabaseClient):
             response.raise_for_status()
             raw_data = response.json()
         except Exception as exc:
-            print(f"  AFLOW request failed: {exc}")
+            logger.warning(f"AFLOW request failed: {exc}")
             return results
 
         if isinstance(raw_data, list):
@@ -514,14 +594,7 @@ class AFLOWClient(MaterialsDatabaseClient):
 
             results.append(structure_data)
 
-        return results
-    
-    def _safe_float(self, value: str) -> Optional[float]:
-        """Safely convert string to float"""
-        try:
-            return float(value.strip())
-        except (ValueError, AttributeError):
-            return None
+        return apply_post_filters(results, filters, STANDARD_PROPERTIES)
     
     def save_cif(self, structure_data: Dict, filename: str) -> str:
         """Save AFLOW structure as CIF file"""
@@ -546,7 +619,6 @@ class AFLOWClient(MaterialsDatabaseClient):
         
         return str(cif_path)
 
-
 class AlexandriaClient(MaterialsDatabaseClient):
     """Alexandria database client using OPTIMADE interface."""
 
@@ -560,12 +632,13 @@ class AlexandriaClient(MaterialsDatabaseClient):
         formula: str,
         limit: int = 10,
         elements: Optional[List[str]] = None,
+        filters: Optional[SearchFilters] = None,
     ) -> List[Dict]:
         """Get structures from Alexandria database using OPTIMADE API."""
         try:
             requested_elements = normalize_elements(elements or []) if elements else []
         except ValueError as exc:
-            print(f"Error retrieving from Alexandria: {exc}")
+            logger.error(f"retrieving from Alexandria: {exc}")
             return []
 
         try:
@@ -576,11 +649,24 @@ class AlexandriaClient(MaterialsDatabaseClient):
                 except Exception:
                     normalized_formula = formula
 
-            filter_str = (
-                _build_optimade_elements_filter(requested_elements)
-                if requested_elements
-                else f'chemical_formula_reduced="{normalized_formula}"'
-            )
+            filter_parts = []
+            if requested_elements:
+                filter_parts.append(_build_optimade_elements_filter(requested_elements))
+            else:
+                filter_parts.append(f'chemical_formula_reduced="{normalized_formula}"')
+
+            # OPTIMADE server-side filters
+            if filters is not None:
+                if filters.num_elements_min is not None:
+                    filter_parts.append(f"nelements>={filters.num_elements_min}")
+                if filters.num_elements_max is not None:
+                    filter_parts.append(f"nelements<={filters.num_elements_max}")
+                if filters.num_sites_min is not None:
+                    filter_parts.append(f"nsites>={filters.num_sites_min}")
+                if filters.num_sites_max is not None:
+                    filter_parts.append(f"nsites<={filters.num_sites_max}")
+
+            filter_str = " AND ".join(filter_parts)
 
             results = []
             available_props = get_available_properties('alexandria')
@@ -627,22 +713,22 @@ class AlexandriaClient(MaterialsDatabaseClient):
                                     structure = self._create_pymatgen_structure(attributes)
                                     structure_data['structure'] = structure
                                 except Exception as e:
-                                    print(f"  Could not create structure: {e}")
+                                    logger.warning(f"Could not create structure: {e}")
 
                             results.append(structure_data)
 
-                        print(f"  Found {len(entries)} materials from Alexandria ({functional})")
+                        logger.info(f"Found {len(entries)} materials from Alexandria ({functional})")
 
                 except requests.RequestException as e:
-                    print(f"  Error querying Alexandria {functional}: {e}")
+                    logger.error(f"querying Alexandria {functional}: {e}")
 
                 if len(results) >= limit:
                     break
 
-            return results[:limit]
+            return apply_post_filters(results[:limit], filters, STANDARD_PROPERTIES)
 
         except Exception as e:
-            print(f"Error retrieving from Alexandria: {e}")
+            logger.error(f"retrieving from Alexandria: {e}")
             return []
     
     def _create_pymatgen_structure(self, attributes: Dict) -> PymatgenStructure:
@@ -688,7 +774,6 @@ class AlexandriaClient(MaterialsDatabaseClient):
         
         return str(cif_path)
 
-
 class MaterialsCloudClient(MaterialsDatabaseClient):
     """Materials Cloud database client using OPTIMADE interface."""
 
@@ -713,12 +798,8 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
         self.archive_databases: List[Dict[str, Optional[str]]] = []
         self.mp_api_key = mp_api_key or os.getenv("MP_API_KEY")
         if not self.mp_api_key:
-            try:  # Prefer config fallback when present
-                import config  # type: ignore
-
-                self.mp_api_key = getattr(config, "MP_API_KEY", None)
-            except ImportError:
-                self.mp_api_key = None
+            from ._config_loader import get_config_value
+            self.mp_api_key = get_config_value("MP_API_KEY")
 
         self._mpr_client: Optional[MPRester] = None
         self._mpr_client_unavailable = False
@@ -753,12 +834,12 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
 
             if discovered:
                 self.archive_databases = discovered
-                print(f"  Found {len(self.archive_databases)} Materials Cloud databases")
+                logger.info(f"Found {len(self.archive_databases)} Materials Cloud databases")
                 return
 
             raise RuntimeError("No child archives returned from Materials Cloud")
         except Exception as exc:
-            print(f"  Could not discover Materials Cloud databases automatically: {exc}")
+            logger.warning(f"Could not discover Materials Cloud databases automatically: {exc}")
 
         # Fallback archives known to be active
         self.archive_databases = [
@@ -805,7 +886,7 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
             try:
                 self._mpr_client = MPRester(self.mp_api_key)
             except Exception as exc:
-                print(f"  Could not initialize Materials Project helper for Materials Cloud: {exc}")
+                logger.warning(f"Could not initialize Materials Project helper for Materials Cloud: {exc}")
                 self._mpr_client_unavailable = True
                 self._mpr_client = None
                 return None
@@ -838,7 +919,7 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
                 fields=list(self._MP_SUMMARY_FIELDS),
             )
         except Exception as exc:
-            print(f"  Could not retrieve Materials Project properties for {mp_id}: {exc}")
+            logger.warning(f"Could not retrieve Materials Project properties for {mp_id}: {exc}")
             self._mp_summary_cache[mp_id] = None
             return None
 
@@ -958,7 +1039,7 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
             lattice = Lattice(lattice_vectors)
             return PymatgenStructure(lattice, site_species, cart_positions, coords_are_cartesian=True)
         except Exception as exc:
-            print(f"  Could not create pymatgen structure from OPTIMADE attributes: {exc}")
+            logger.warning(f"Could not create pymatgen structure from OPTIMADE attributes: {exc}")
             return None
 
     def get_structures(
@@ -966,24 +1047,38 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
         formula: str,
         limit: int = 10,
         elements: Optional[List[str]] = None,
+        filters: Optional[SearchFilters] = None,
     ) -> List[Dict]:
         """Retrieve Materials Cloud structures using the official OPTIMADE client."""
         if OptimadeClient is None or OptimadeStructure is None:
-            print("  Materials Cloud client unavailable: install optimade[http_client] to enable access.")
+            logger.warning("Materials Cloud client unavailable: install optimade[http_client] to enable access.")
             return []
 
         try:
             requested_elements = normalize_elements(elements or []) if elements else []
         except ValueError as exc:
-            print(f"  Materials Cloud query validation failed: {exc}")
+            logger.warning(f"Materials Cloud query validation failed: {exc}")
             return []
 
         normalized_formula = self._normalize_formula(formula)
-        filter_str = (
-            _build_optimade_elements_filter(requested_elements)
-            if requested_elements
-            else f'chemical_formula_reduced="{normalized_formula}"'
-        )
+        filter_parts = []
+        if requested_elements:
+            filter_parts.append(_build_optimade_elements_filter(requested_elements))
+        else:
+            filter_parts.append(f'chemical_formula_reduced="{normalized_formula}"')
+
+        # OPTIMADE server-side filters
+        if filters is not None:
+            if filters.num_elements_min is not None:
+                filter_parts.append(f"nelements>={filters.num_elements_min}")
+            if filters.num_elements_max is not None:
+                filter_parts.append(f"nelements<={filters.num_elements_max}")
+            if filters.num_sites_min is not None:
+                filter_parts.append(f"nsites>={filters.num_sites_min}")
+            if filters.num_sites_max is not None:
+                filter_parts.append(f"nsites<={filters.num_sites_max}")
+
+        filter_str = " AND ".join(filter_parts)
         results: List[Dict] = []
         available_props = get_available_properties('materials_cloud')
         response_fields = list(self._optimade_response_fields())
@@ -1011,8 +1106,8 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
                         response_fields=response_fields,
                     )
                 except Exception as primary_exc:
-                    print(
-                        f"  Materials Cloud query for {archive.get('id')} with filtered fields failed: {primary_exc}. Retrying without response_fields."
+                    logger.warning(
+                        f"Materials Cloud query for {archive.get('id')} with filtered fields failed: {primary_exc}. Retrying without response_fields."
                     )
                     response = client.structures.get(filter=filter_str)
 
@@ -1039,13 +1134,13 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
                                 entries = fallback_data
                                 break
             except Exception as exc:
-                print(f"  Materials Cloud query failed for {archive.get('id')}: {exc}")
+                logger.warning(f"Materials Cloud query failed for {archive.get('id')}: {exc}")
                 continue
 
             if not entries:
                 continue
 
-            print(f"  Found {len(entries)} materials from Materials Cloud database {archive.get('id')}")
+            logger.info(f"Found {len(entries)} materials from Materials Cloud database {archive.get('id')}")
 
             for entry in entries:
                 if len(results) >= limit:
@@ -1112,12 +1207,12 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
                         if isinstance(structure, PymatgenStructure):
                             structure_data['structure'] = structure
                     except OptimadeConversionError as conv_exc:
-                        print(
-                            f"  Could not convert Materials Cloud structure {entry.get('id')} to pymatgen: {conv_exc}"
+                        logger.warning(
+                            f"Could not convert Materials Cloud structure {entry.get('id')} to pymatgen: {conv_exc}"
                         )
                     except Exception as exc:
-                        print(
-                            f"  Unexpected error converting Materials Cloud structure {entry.get('id')}: {exc}"
+                        logger.warning(
+                            f"Unexpected error converting Materials Cloud structure {entry.get('id')}: {exc}"
                         )
 
                 normalized_mp_id = self._normalize_mp_identifier(attributes.get('_mcloudarchive_mp_id'))
@@ -1129,7 +1224,7 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
 
                 results.append(structure_data)
 
-        return results[:limit]
+        return apply_post_filters(results[:limit], filters, STANDARD_PROPERTIES)
     
     def save_cif(self, structure_data: Dict, filename: str) -> str:
         """Save Materials Cloud structure as CIF file"""
@@ -1163,7 +1258,6 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
         
         return str(cif_path)
 
-
 class OptimadeSearchClient(MaterialsDatabaseClient):
     """Generic OPTIMADE client for formula-based searches across providers."""
 
@@ -1182,12 +1276,8 @@ class OptimadeSearchClient(MaterialsDatabaseClient):
         self._providers: Optional[List[Dict[str, str]]] = None
 
         if registry_url is None:
-            try:
-                import config  # type: ignore
-
-                registry_url = getattr(config, "OPTIMADE_REGISTRY_URL", None)
-            except ImportError:
-                registry_url = None
+            from ._config_loader import get_config_value
+            registry_url = get_config_value("OPTIMADE_REGISTRY_URL")
 
         self.registry_url = registry_url
 
@@ -1231,7 +1321,7 @@ class OptimadeSearchClient(MaterialsDatabaseClient):
                 max_providers=self.max_providers,
             )
         except Exception as exc:
-            print(f"  OPTIMADE registry fetch failed: {exc}")
+            logger.warning(f"OPTIMADE registry fetch failed: {exc}")
             self._providers = []
 
         return self._providers
@@ -1272,9 +1362,9 @@ class OptimadeSearchClient(MaterialsDatabaseClient):
             if isinstance(structure, PymatgenStructure):
                 return structure
         except OptimadeConversionError as exc:
-            print(f"  OPTIMADE conversion error for {entry.get('id')}: {exc}")
+            logger.warning(f"OPTIMADE conversion error for {entry.get('id')}: {exc}")
         except Exception as exc:
-            print(f"  OPTIMADE conversion failed for {entry.get('id')}: {exc}")
+            logger.warning(f"OPTIMADE conversion failed for {entry.get('id')}: {exc}")
         return None
 
     def get_structures(
@@ -1282,6 +1372,7 @@ class OptimadeSearchClient(MaterialsDatabaseClient):
         formula: str,
         limit: int = 10,
         elements: Optional[List[str]] = None,
+        filters: Optional[SearchFilters] = None,
     ) -> List[Dict]:
         """Search OPTIMADE providers for a given formula."""
         providers = self._get_providers()
@@ -1291,15 +1382,28 @@ class OptimadeSearchClient(MaterialsDatabaseClient):
         try:
             requested_elements = normalize_elements(elements or []) if elements else []
         except ValueError as exc:
-            print(f"  OPTIMADE query validation failed: {exc}")
+            logger.warning(f"OPTIMADE query validation failed: {exc}")
             return []
 
         normalized_formula = self._normalize_formula(formula)
-        filter_str = (
-            _build_optimade_elements_filter(requested_elements)
-            if requested_elements
-            else f'chemical_formula_reduced="{normalized_formula}"'
-        )
+        filter_parts = []
+        if requested_elements:
+            filter_parts.append(_build_optimade_elements_filter(requested_elements))
+        else:
+            filter_parts.append(f'chemical_formula_reduced="{normalized_formula}"')
+
+        # OPTIMADE server-side filters
+        if filters is not None:
+            if filters.num_elements_min is not None:
+                filter_parts.append(f"nelements>={filters.num_elements_min}")
+            if filters.num_elements_max is not None:
+                filter_parts.append(f"nelements<={filters.num_elements_max}")
+            if filters.num_sites_min is not None:
+                filter_parts.append(f"nsites>={filters.num_sites_min}")
+            if filters.num_sites_max is not None:
+                filter_parts.append(f"nsites<={filters.num_sites_max}")
+
+        filter_str = " AND ".join(filter_parts)
         available_props = get_available_properties("optimade")
         results: List[Dict] = []
 
@@ -1324,7 +1428,7 @@ class OptimadeSearchClient(MaterialsDatabaseClient):
                 response.raise_for_status()
                 payload = response.json()
             except Exception as exc:
-                print(f"  OPTIMADE query failed for {provider_id}: {exc}")
+                logger.warning(f"OPTIMADE query failed for {provider_id}: {exc}")
                 continue
 
             entries = payload.get("data", []) if isinstance(payload, dict) else []
@@ -1368,7 +1472,7 @@ class OptimadeSearchClient(MaterialsDatabaseClient):
                 results.append(structure_data)
                 provider_result_count += 1
 
-        return results
+        return apply_post_filters(results, filters, STANDARD_PROPERTIES)
 
     def save_cif(self, structure_data: Dict, filename: str) -> str:
         """Save OPTIMADE structure as CIF file."""
@@ -1392,7 +1496,6 @@ class OptimadeSearchClient(MaterialsDatabaseClient):
 
         return str(cif_path)
 
-
 class MPDSClient(MaterialsDatabaseClient):
     """MPDS (Materials Platform for Data Science) database client."""
 
@@ -1408,17 +1511,18 @@ class MPDSClient(MaterialsDatabaseClient):
         formula: str,
         limit: int = 10,
         elements: Optional[List[str]] = None,
+        filters: Optional[SearchFilters] = None,
     ) -> List[Dict]:
         """Get structures from MPDS database"""
         try:
             requested_elements = normalize_elements(elements or []) if elements else []
         except ValueError as exc:
-            print(f"Error retrieving from MPDS: {exc}")
+            logger.error(f"retrieving from MPDS: {exc}")
             return []
 
         query_label = format_chemsys(requested_elements) if requested_elements else formula
         try:
-            print(f"  Connecting to MPDS for {query_label}...")
+            logger.info(f"Connecting to MPDS for {query_label}...")
             
             # Search for materials with the given formula using simpler approach
             # MPDS API is quite specific about query format
@@ -1427,6 +1531,10 @@ class MPDSClient(MaterialsDatabaseClient):
                 query["elements"] = "-".join(requested_elements)
             else:
                 query["formulae"] = formula
+
+            # MPDS supports crystal class filter
+            if filters is not None and filters.crystal_system is not None:
+                query["classes"] = filters.crystal_system
             
             results = []
             
@@ -1491,16 +1599,16 @@ class MPDSClient(MaterialsDatabaseClient):
                         if structure:
                             structure_data['structure'] = structure
                     except Exception as e:
-                        print(f"  Could not create structure: {e}")
+                        logger.warning(f"Could not create structure: {e}")
 
                     results.append(structure_data)
                     count += 1
                 
-                print(f"  Found {len(results)} materials from MPDS")
-                return results
+                logger.info(f"Found {len(results)} materials from MPDS")
+                return apply_post_filters(results, filters, STANDARD_PROPERTIES)
                 
             except Exception as e:
-                print(f"  MPDS API error: {e}")
+                logger.warning(f"MPDS API error: {e}")
                 # Try alternative approach with different query
                 return self._get_structures_alternative(
                     formula,
@@ -1509,7 +1617,7 @@ class MPDSClient(MaterialsDatabaseClient):
                 )
             
         except Exception as e:
-            print(f"Error retrieving from MPDS: {e}")
+            logger.error(f"retrieving from MPDS: {e}")
             # Fallback to simple approach
             return self._get_structures_simple(
                 formula,
@@ -1570,14 +1678,14 @@ class MPDSClient(MaterialsDatabaseClient):
                 count += 1
             
             if results:
-                print(f"  Found {len(results)} materials from MPDS (phase diagram data)")
+                logger.info(f"Found {len(results)} materials from MPDS (phase diagram data)")
                 return results
             else:
                 # Final fallback
                 return self._get_structures_simple(formula, limit, elements=query_elements)
                 
         except Exception as e:
-            print(f"  MPDS alternative query error: {e}")
+            logger.warning(f"MPDS alternative query error: {e}")
             return self._get_structures_simple(formula, limit, elements=elements)
     
     def _get_structures_simple(
@@ -1616,7 +1724,7 @@ class MPDSClient(MaterialsDatabaseClient):
             
             return [structure_data]
         except Exception as e:
-            print(f"Error with MPDS simple approach: {e}")
+            logger.error(f"with MPDS simple approach: {e}")
             return []
     
     def _parse_formula_elements(self, formula: str) -> str:
@@ -1698,7 +1806,6 @@ class MPDSClient(MaterialsDatabaseClient):
         
         return str(cif_path)
 
-
 class OQMDClient(MaterialsDatabaseClient):
     """OQMD database client using the public REST API."""
 
@@ -1709,17 +1816,28 @@ class OQMDClient(MaterialsDatabaseClient):
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "mat-rev/1.0"})
 
+    def close(self) -> None:
+        """Close the underlying HTTP session."""
+        self.session.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
     def get_structures(
         self,
         formula: str,
         limit: int = 10,
         elements: Optional[List[str]] = None,
+        filters: Optional[SearchFilters] = None,
     ) -> List[Dict]:
         """Retrieve structures from OQMD formation energy endpoint."""
         if limit <= 0:
             return []
         if elements:
-            print("  OQMD element-set search is not supported reliably; skipping.")
+            logger.info("OQMD element-set search is not supported reliably; skipping.")
             return []
 
         params = {
@@ -1730,12 +1848,27 @@ class OQMDClient(MaterialsDatabaseClient):
             "noduplicate": "True",
         }
 
+        # OQMD REST API supports filter params
+        if filters is not None:
+            if filters.band_gap_min is not None:
+                params["band_gap_min"] = str(filters.band_gap_min)
+            if filters.band_gap_max is not None:
+                params["band_gap_max"] = str(filters.band_gap_max)
+            if filters.formation_energy_min is not None:
+                params["delta_e_min"] = str(filters.formation_energy_min)
+            if filters.formation_energy_max is not None:
+                params["delta_e_max"] = str(filters.formation_energy_max)
+            if filters.energy_above_hull_max is not None:
+                params["stability_max"] = str(filters.energy_above_hull_max)
+            if filters.is_stable is True:
+                params["stability_max"] = "0"
+
         try:
             response = self.session.get(f"{self.BASE_URL}/formationenergy", params=params, timeout=30)
             response.raise_for_status()
             payload = response.json()
         except Exception as exc:
-            print(f"  OQMD request failed: {exc}")
+            logger.warning(f"OQMD request failed: {exc}")
             return []
 
         entries = []
@@ -1773,7 +1906,7 @@ class OQMDClient(MaterialsDatabaseClient):
 
             results.append(structure_data)
 
-        return results
+        return apply_post_filters(results, filters, STANDARD_PROPERTIES)
 
     def _build_structure(self, entry: Dict) -> Optional[PymatgenStructure]:
         unit_cell = entry.get("unit_cell")
@@ -1845,7 +1978,6 @@ class OQMDClient(MaterialsDatabaseClient):
 
         return str(cif_path)
 
-
 class MaterialsDatabaseRetriever:
     """Retrieve materials data from the configured databases."""
 
@@ -1854,11 +1986,13 @@ class MaterialsDatabaseRetriever:
         mp_api_key: Optional[str] = None,
         mpds_api_key: Optional[str] = None,
         output_directory: Optional[Path] = None,
+        storage=None,
     ):
         self.mp_api_key = mp_api_key
         self.mpds_api_key = mpds_api_key
         self.output_directory = Path(output_directory) if output_directory else (Path.cwd() / "downloaded_materials")
         self.output_directory.mkdir(parents=True, exist_ok=True)
+        self.storage = storage  # Optional StorageBackend instance
         self.clients: Dict[str, MaterialsDatabaseClient] = {}
         self._initialize_clients()
 
@@ -1870,30 +2004,30 @@ class MaterialsDatabaseRetriever:
                 self.clients['materials_project'] = MaterialsProjectClient(
                     self.mp_api_key, output_directory=self.output_directory
                 )
-                print("✓ Materials Project client initialized")
+                logger.info("Materials Project client initialized")
             except Exception as e:
-                print(f"✗ Materials Project client failed: {e}")
+                logger.error(f"Materials Project client failed: {e}")
         
         # JARVIS
         try:
             self.clients['jarvis'] = JARVISClient(output_directory=self.output_directory)
-            print("✓ JARVIS client initialized")
+            logger.info("JARVIS client initialized")
         except Exception as e:
-            print(f"✗ JARVIS client failed: {e}")
+            logger.error(f"JARVIS client failed: {e}")
         
         # AFLOW
         try:
             self.clients['aflow'] = AFLOWClient(output_directory=self.output_directory)
-            print("✓ AFLOW client initialized")
+            logger.info("AFLOW client initialized")
         except Exception as e:
-            print(f"✗ AFLOW client failed: {e}")
+            logger.error(f"AFLOW client failed: {e}")
         
         # Alexandria
         try:
             self.clients['alexandria'] = AlexandriaClient(output_directory=self.output_directory)
-            print("✓ Alexandria client initialized")
+            logger.info("Alexandria client initialized")
         except Exception as e:
-            print(f"✗ Alexandria client failed: {e}")
+            logger.error(f"Alexandria client failed: {e}")
         
         # Materials Cloud
         try:
@@ -1901,25 +2035,25 @@ class MaterialsDatabaseRetriever:
                 output_directory=self.output_directory,
                 mp_api_key=self.mp_api_key,
             )
-            print("✓ Materials Cloud client initialized")
+            logger.info("Materials Cloud client initialized")
         except Exception as e:
-            print(f"✗ Materials Cloud client failed: {e}")
+            logger.error(f"Materials Cloud client failed: {e}")
 
         # OPTIMADE (generic)
         try:
             self.clients['optimade'] = OptimadeSearchClient(
                 output_directory=self.output_directory,
             )
-            print("✓ OPTIMADE client initialized")
+            logger.info("OPTIMADE client initialized")
         except Exception as e:
-            print(f"✗ OPTIMADE client failed: {e}")
+            logger.error(f"OPTIMADE client failed: {e}")
         
         # OQMD
         try:
             self.clients['oqmd'] = OQMDClient(output_directory=self.output_directory)
-            print("✓ OQMD client initialized")
+            logger.info("OQMD client initialized")
         except Exception as e:
-            print(f"✗ OQMD client failed: {e}")
+            logger.error(f"OQMD client failed: {e}")
 
         # MPDS
         if self.mpds_api_key:
@@ -1927,32 +2061,43 @@ class MaterialsDatabaseRetriever:
                 self.clients['mpds'] = MPDSClient(
                     self.mpds_api_key, output_directory=self.output_directory
                 )
-                print("✓ MPDS client initialized")
+                logger.info("MPDS client initialized")
             except Exception as e:
-                print(f"✗ MPDS client failed: {e}")
+                logger.error(f"MPDS client failed: {e}")
     
     def retrieve_materials(self, formula: str, limit_per_db: int = 3) -> Dict[str, List[Dict]]:
         """Retrieve materials from all available databases"""
         all_results = {}
         
-        print(f"\nRetrieving materials for formula: {formula}")
-        print("=" * 50)
-        
+        logger.info(f"Retrieving materials for formula: {formula}")
+
         for db_name, client in self.clients.items():
-            print(f"\nQuerying {db_name}...")
+            logger.info(f"Querying {db_name}...")
             try:
                 results = client.get_structures(formula, limit_per_db)
                 all_results[db_name] = results
-                print(f"  Found {len(results)} materials")
+                logger.info(f"Found {len(results)} materials")
                 
                 # Save CIF files for retrieved materials
                 for i, material in enumerate(results):
                     filename = f"{db_name}_{formula}_{i+1}"
                     cif_path = client.save_cif(material, filename)
-                    print(f"  Saved: {cif_path}")
+                    logger.info(f"Saved: {cif_path}")
+
+                    # Persist to storage backend (if configured)
+                    if self.storage is not None:
+                        try:
+                            mat_copy = dict(material)
+                            mat_copy["cif_path"] = cif_path
+                            mat_copy["source_database"] = db_name
+                            self.storage.save_material(
+                                mat_copy, search_query=formula,
+                            )
+                        except Exception as exc:
+                            logger.warning(f"Storage save failed for {filename}: {exc}")
                     
             except Exception as e:
-                print(f"  Error: {e}")
+                logger.error(f"{e}")
                 all_results[db_name] = []
         
         return all_results
@@ -1964,11 +2109,10 @@ class MaterialsDatabaseRetriever:
         
         test_results = {}
         
-        print("Testing materials database retrieval...")
-        print("=" * 60)
-        
+        logger.info("Testing materials database retrieval...")
+
         for formula in test_formulas:
-            print(f"\nTesting with formula: {formula}")
+            logger.info(f"Testing with formula: {formula}")
             results = self.retrieve_materials(formula, limit_per_db=1)
             test_results[formula] = results
             
@@ -1976,8 +2120,8 @@ class MaterialsDatabaseRetriever:
             total_materials = sum(len(materials) for materials in results.values())
             successful_dbs = len([db for db, materials in results.items() if materials])
             
-            print(f"\nSummary for {formula}:")
-            print(f"  Total materials found: {total_materials}")
-            print(f"  Successful databases: {successful_dbs}/{len(self.clients)}")
+            logger.info(f"Summary for {formula}:")
+            logger.info(f"Total materials found: {total_materials}")
+            logger.info(f"Successful databases: {successful_dbs}/{len(self.clients)}")
         
         return test_results

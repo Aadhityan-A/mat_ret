@@ -336,18 +336,26 @@ QTreeWidget::item:selected {
 
 QScrollBar:vertical {
     background-color: #f0f0f0;
-    width: 12px;
-    border-radius: 6px;
+    width: 10px;
+    border-radius: 5px;
 }
 
 QScrollBar::handle:vertical {
     background-color: #c0c0c0;
-    border-radius: 6px;
-    min-height: 20px;
+    border-radius: 5px;
+    min-height: 30px;
 }
 
 QScrollBar::handle:vertical:hover {
     background-color: #a0a0a0;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
 }
 
 QStatusBar {

@@ -18,6 +18,7 @@ from .databases import (
 )
 from .optimade.harvester import OptimadeHarvester
 from .optimade.registry import fetch_registry_links
+from .search import SearchFilters
 from .xrd import (
     XRDConfig,
     XRDResult,
@@ -38,13 +39,14 @@ def fetch_materials_project(
     limit: int = 10,
     elements: Optional[List[str]] = None,
     output_directory: Optional[Path] = None,
+    filters: Optional[SearchFilters] = None,
 ) -> List[Dict]:
     """Retrieve structures from the Materials Project database."""
     if not api_key:
         raise ValueError("Materials Project API key is required")
 
     client = MaterialsProjectClient(api_key, output_directory=_sanitize_output_directory(output_directory))
-    return client.get_structures(formula, limit=limit, elements=elements)
+    return client.get_structures(formula, limit=limit, elements=elements, filters=filters)
 
 
 def fetch_jarvis(
@@ -53,10 +55,11 @@ def fetch_jarvis(
     limit: int = 10,
     elements: Optional[List[str]] = None,
     output_directory: Optional[Path] = None,
+    filters: Optional[SearchFilters] = None,
 ) -> List[Dict]:
     """Retrieve structures from the JARVIS database."""
     client = JARVISClient(output_directory=_sanitize_output_directory(output_directory))
-    return client.get_structures(formula, limit=limit, elements=elements)
+    return client.get_structures(formula, limit=limit, elements=elements, filters=filters)
 
 
 def fetch_aflow(
@@ -65,10 +68,11 @@ def fetch_aflow(
     limit: int = 10,
     elements: Optional[List[str]] = None,
     output_directory: Optional[Path] = None,
+    filters: Optional[SearchFilters] = None,
 ) -> List[Dict]:
     """Retrieve structures from the AFLOW database."""
     client = AFLOWClient(output_directory=_sanitize_output_directory(output_directory))
-    return client.get_structures(formula, limit=limit, elements=elements)
+    return client.get_structures(formula, limit=limit, elements=elements, filters=filters)
 
 
 def fetch_alexandria(
@@ -77,10 +81,11 @@ def fetch_alexandria(
     limit: int = 10,
     elements: Optional[List[str]] = None,
     output_directory: Optional[Path] = None,
+    filters: Optional[SearchFilters] = None,
 ) -> List[Dict]:
     """Retrieve structures from the Alexandria database."""
     client = AlexandriaClient(output_directory=_sanitize_output_directory(output_directory))
-    return client.get_structures(formula, limit=limit, elements=elements)
+    return client.get_structures(formula, limit=limit, elements=elements, filters=filters)
 
 
 def fetch_materials_cloud(
@@ -90,13 +95,14 @@ def fetch_materials_cloud(
     elements: Optional[List[str]] = None,
     output_directory: Optional[Path] = None,
     mp_api_key: Optional[str] = None,
+    filters: Optional[SearchFilters] = None,
 ) -> List[Dict]:
     """Retrieve structures from the Materials Cloud archive."""
     client = MaterialsCloudClient(
         output_directory=_sanitize_output_directory(output_directory),
         mp_api_key=mp_api_key,
     )
-    return client.get_structures(formula, limit=limit, elements=elements)
+    return client.get_structures(formula, limit=limit, elements=elements, filters=filters)
 
 
 def fetch_oqmd(
@@ -105,10 +111,11 @@ def fetch_oqmd(
     limit: int = 10,
     elements: Optional[List[str]] = None,
     output_directory: Optional[Path] = None,
+    filters: Optional[SearchFilters] = None,
 ) -> List[Dict]:
     """Retrieve structures from the OQMD database."""
     client = OQMDClient(output_directory=_sanitize_output_directory(output_directory))
-    return client.get_structures(formula, limit=limit, elements=elements)
+    return client.get_structures(formula, limit=limit, elements=elements, filters=filters)
 
 
 def fetch_mpds(
@@ -118,12 +125,13 @@ def fetch_mpds(
     limit: int = 10,
     elements: Optional[List[str]] = None,
     output_directory: Optional[Path] = None,
+    filters: Optional[SearchFilters] = None,
 ) -> List[Dict]:
     """Retrieve structures from the MPDS database."""
     # MPDS API key is optional; use empty string if not provided
     api_key = api_key or ""
     client = MPDSClient(api_key, output_directory=_sanitize_output_directory(output_directory))
-    return client.get_structures(formula, limit=limit, elements=elements)
+    return client.get_structures(formula, limit=limit, elements=elements, filters=filters)
 
 
 def fetch_optimade(
@@ -134,6 +142,7 @@ def fetch_optimade(
     output_directory: Optional[Path] = None,
     registry_url: Optional[str] = None,
     providers: Optional[List[Dict[str, str]]] = None,
+    filters: Optional[SearchFilters] = None,
 ) -> List[Dict]:
     """Retrieve structures from OPTIMADE providers."""
     client = OptimadeSearchClient(
@@ -141,7 +150,7 @@ def fetch_optimade(
         registry_url=registry_url,
         providers=providers,
     )
-    return client.get_structures(formula, limit=limit, elements=elements)
+    return client.get_structures(formula, limit=limit, elements=elements, filters=filters)
 
 
 def list_optimade_providers(
@@ -150,12 +159,8 @@ def list_optimade_providers(
 ) -> List[Dict]:
     """List OPTIMADE providers from the registry."""
     if registry_url is None:
-        try:
-            import config  # type: ignore
-
-            registry_url = getattr(config, "OPTIMADE_REGISTRY_URL", None)
-        except ImportError:
-            registry_url = None
+        from ._config_loader import get_config_value
+        registry_url = get_config_value("OPTIMADE_REGISTRY_URL")
     if not registry_url:
         raise ValueError("OPTIMADE registry URL is required")
 
@@ -179,12 +184,8 @@ def harvest_optimade(
 ) -> None:
     """Harvest all OPTIMADE providers into CIF + metadata shards."""
     if registry_url is None:
-        try:
-            import config  # type: ignore
-
-            registry_url = getattr(config, "OPTIMADE_REGISTRY_URL", None)
-        except ImportError:
-            registry_url = None
+        from ._config_loader import get_config_value
+        registry_url = get_config_value("OPTIMADE_REGISTRY_URL")
     if not registry_url:
         raise ValueError("OPTIMADE registry URL is required")
 
@@ -214,12 +215,22 @@ def fetch_all_databases(
     mp_api_key: Optional[str] = None,
     mpds_api_key: Optional[str] = None,
     output_directory: Optional[Path] = None,
+    storage=None,
 ) -> Dict[str, List[Dict]]:
-    """Retrieve structures from every available database client."""
+    """Retrieve structures from every available database client.
+
+    Parameters
+    ----------
+    storage:
+        Optional :class:`~mat_ret.storage.base.StorageBackend` instance.
+        When provided, every retrieved material is also persisted into the
+        chosen storage backend.
+    """
     retriever = MaterialsDatabaseRetriever(
         mp_api_key=mp_api_key,
         mpds_api_key=mpds_api_key,
         output_directory=_sanitize_output_directory(output_directory),
+        storage=storage,
     )
     return retriever.retrieve_materials(formula, limit_per_db=limit_per_database)
 

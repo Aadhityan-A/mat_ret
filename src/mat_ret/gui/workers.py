@@ -7,6 +7,8 @@ Provides QThread-based workers for non-blocking database queries.
 from typing import Dict, List, Optional
 from PyQt6.QtCore import QThread, pyqtSignal, QObject
 
+from ..search import SearchFilters
+
 
 class FetchWorker(QThread):
     """Worker thread for fetching materials from databases."""
@@ -27,6 +29,7 @@ class FetchWorker(QThread):
                  optimade_providers: Optional[List[Dict[str, str]]] = None,
                  query_mode: str = "formula",
                  elements: Optional[List[str]] = None,
+                 filters: Optional[SearchFilters] = None,
                  parent=None):
         super().__init__(parent)
         self.formula = formula
@@ -37,6 +40,7 @@ class FetchWorker(QThread):
         self.mp_api_key = mp_api_key
         self.mpds_api_key = mpds_api_key
         self.optimade_providers = optimade_providers or []
+        self.filters = filters
         self._is_cancelled = False
     
     def cancel(self):
@@ -152,6 +156,10 @@ class FetchWorker(QThread):
                 kwargs = {'limit': self.limit}
                 if self.query_mode == "elements_all" and self.elements:
                     kwargs["elements"] = list(self.elements)
+                
+                # Add search filters
+                if self.filters is not None and self.filters.has_any_filter():
+                    kwargs['filters'] = self.filters
                 
                 # Add API key if required
                 if config.get('requires_key'):

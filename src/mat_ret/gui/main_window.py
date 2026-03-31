@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QLabel, QLineEdit, QPushButton, QStatusBar, QProgressBar,
     QFrame, QMessageBox, QApplication, QToolBar, QMenuBar, QMenu,
-    QFileDialog, QSizePolicy, QToolButton, QDialog
+    QFileDialog, QSizePolicy, QToolButton, QDialog, QScrollArea,
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QAction, QIcon, QKeySequence, QPixmap, QPainter, QPen, QColor
@@ -19,12 +19,16 @@ from .widgets import (
     DatabaseSelectorWidget,
     PeriodicTableDialog,
     ResultsViewWidget,
+    SearchFiltersWidget,
     StructureViewerWidget,
     XRDGeneratorWindow,
 )
+from .widgets.storage_config_dialog import StorageConfigDialog
+from .widgets.storage_browser_dialog import StorageBrowserDialog
 from .workers import FetchWorker
 from .utils import APP_STYLESHEET
 from ..search import SearchQuery, format_chemsys, parse_search_text
+from ..storage import get_storage, StorageType
 
 
 class MainWindow(QMainWindow):
@@ -37,6 +41,10 @@ class MainWindow(QMainWindow):
         self.xrd_window = None
         self._selected_elements: List[str] = []
         self._updating_search_text = False
+        # Storage backend state
+        self._storage_backend_type = StorageType.FILE
+        self._storage_config: dict = {}
+        self._storage = None  # active StorageBackend instance (None = file-only default)
         self._setup_ui()
         self._setup_menu()
         self._setup_connections()
@@ -74,21 +82,48 @@ class MainWindow(QMainWindow):
             }
         """)
         
-        # Left panel - Database selector
+        # Left panel - Database selector + Search filters (scrollable)
         left_panel = QFrame()
-        left_panel.setMinimumWidth(280)
-        left_panel.setMaximumWidth(400)
+        left_panel.setMinimumWidth(300)
+        left_panel.setMaximumWidth(420)
         left_panel.setStyleSheet("""
-            QFrame {
-                background-color: white;
+            QFrame#leftPanel {
+                background-color: #f8f9fb;
                 border-right: 1px solid #e0e0e0;
             }
         """)
+        left_panel.setObjectName("leftPanel")
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        
+        left_layout.setSpacing(0)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.verticalScrollBar().setSingleStep(20)
+
+        scroll_content = QWidget()
+        scroll_content.setStyleSheet("background-color: #f8f9fb;")
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(4, 8, 4, 8)
+        scroll_layout.setSpacing(2)
+
         self.database_selector = DatabaseSelectorWidget()
-        left_layout.addWidget(self.database_selector)
+        scroll_layout.addWidget(self.database_selector)
+
+        # Thin separator
+        sep = QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background-color: #e0e0e0; margin: 4px 12px;")
+        scroll_layout.addWidget(sep)
+
+        self.search_filters = SearchFiltersWidget()
+        scroll_layout.addWidget(self.search_filters)
+
+        scroll_layout.addStretch()
+        scroll_area.setWidget(scroll_content)
+        left_layout.addWidget(scroll_area)
         
         content_splitter.addWidget(left_panel)
         
@@ -342,7 +377,42 @@ class MainWindow(QMainWindow):
         xrd_action.setShortcut("Ctrl+Shift+X")
         xrd_action.triggered.connect(self._open_xrd_generator)
         tools_menu.addAction(xrd_action)
-        
+
+        # Database (storage) menu
+        db_menu = menubar.addMenu("&Database")
+
+        # Storage Backend submenu (radio group)
+        backend_menu = db_menu.addMenu("Storage Backend")
+        self._backend_actions = {}
+        for st in StorageType:
+            action = QAction(st.value.capitalize(), self, checkable=True)
+            action.setData(st)
+            action.triggered.connect(lambda checked, s=st: self._set_storage_backend(s))
+            backend_menu.addAction(action)
+            self._backend_actions[st] = action
+        self._backend_actions[StorageType.FILE].setChecked(True)
+
+        db_menu.addSeparator()
+
+        configure_action = QAction("Configure Storage…", self)
+        configure_action.triggered.connect(self._open_storage_config)
+        db_menu.addAction(configure_action)
+
+        browse_action = QAction("Browse Stored Materials…", self)
+        browse_action.setShortcut("Ctrl+Shift+B")
+        browse_action.triggered.connect(self._open_storage_browser)
+        db_menu.addAction(browse_action)
+
+        db_menu.addSeparator()
+
+        import_action = QAction("Import Current Results to Storage", self)
+        import_action.triggered.connect(self._import_results_to_storage)
+        db_menu.addAction(import_action)
+
+        stats_action = QAction("Storage Statistics", self)
+        stats_action.triggered.connect(self._show_storage_stats)
+        db_menu.addAction(stats_action)
+
         # Help menu
         help_menu = menubar.addMenu("&Help")
         
@@ -485,9 +555,10 @@ class MainWindow(QMainWindow):
             limit=limit,
             api_keys=api_keys,
             optimade_providers=optimade_providers,
+            filters=self.search_filters.get_filters(),
         )
     
-    def _start_fetch(self, query: SearchQuery, databases: list, limit: int, api_keys: dict, optimade_providers: list):
+    def _start_fetch(self, query: SearchQuery, databases: list, limit: int, api_keys: dict, optimade_providers: list, filters=None):
         """Start the fetch worker."""
         # Update UI
         self.search_button.setEnabled(False)
@@ -508,6 +579,7 @@ class MainWindow(QMainWindow):
             mp_api_key=api_keys.get('mp_api_key'),
             mpds_api_key=api_keys.get('mpds_api_key'),
             optimade_providers=optimade_providers,
+            filters=filters,
         )
         
         self.fetch_worker.status_update.connect(self._on_status_update)
@@ -559,6 +631,10 @@ class MainWindow(QMainWindow):
         else:
             self.status_bar.showMessage("No results found. Try a different composition.")
 
+        # Auto-save to storage backend (if not file-mode)
+        if total > 0:
+            self._auto_save_to_storage(results)
+
     def _on_material_selected(self, material: dict):
         """Handle material selection for structure viewing."""
         self.current_material = material
@@ -584,6 +660,151 @@ class MainWindow(QMainWindow):
         self.xrd_window.show()
         self.xrd_window.raise_()
         self.xrd_window.activateWindow()
+
+    # -- Storage menu handlers -------------------------------------------------
+
+    def _set_storage_backend(self, backend_type: "StorageType") -> None:
+        """Switch the active storage backend."""
+        # Uncheck all, then check selected
+        for st, act in self._backend_actions.items():
+            act.setChecked(st == backend_type)
+
+        if backend_type == self._storage_backend_type and self._storage is not None:
+            return  # already active
+
+        # Close previous backend
+        if self._storage is not None:
+            try:
+                self._storage.close()
+            except Exception:
+                pass
+            self._storage = None
+
+        self._storage_backend_type = backend_type
+
+        if backend_type == StorageType.FILE:
+            # File backend — storage is None; save_cif already handles file writes
+            self._storage = None
+            self.status_bar.showMessage("Storage: File mode (JSON + CIF)")
+            return
+
+        try:
+            self._storage = get_storage(
+                backend_type,
+                sqlite_path=self._storage_config.get("sqlite_path") or None,
+                mongodb_uri=self._storage_config.get("mongodb_uri") or None,
+                mongodb_db_name=self._storage_config.get("mongodb_db_name") or None,
+            )
+            self.status_bar.showMessage(f"Storage: {backend_type.value.capitalize()} backend active")
+        except ImportError as exc:
+            QMessageBox.warning(self, "Missing Dependency", str(exc))
+            self._set_storage_backend(StorageType.FILE)
+        except Exception as exc:
+            QMessageBox.critical(self, "Storage Error", f"Failed to initialize storage:\n{exc}")
+            self._set_storage_backend(StorageType.FILE)
+
+    def _open_storage_config(self) -> None:
+        """Open the storage configuration dialog."""
+        dialog = StorageConfigDialog(self, current_config=self._storage_config)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._storage_config = dialog.get_config()
+            # Re-initialize active backend with new config
+            self._set_storage_backend(self._storage_backend_type)
+
+    def _open_storage_browser(self) -> None:
+        """Open the stored materials browser."""
+        storage = self._storage
+        if storage is None:
+            # For file mode, create a temporary FileStorage for browsing
+            from ..storage import FileStorage
+            output_dir = self._storage_config.get("output_directory") or None
+            storage = FileStorage(output_directory=output_dir)
+        dialog = StorageBrowserDialog(storage, parent=self)
+        dialog.exec()
+
+    def _import_results_to_storage(self) -> None:
+        """Import current search results into the active storage backend."""
+        results = self.results_view.results_data
+        if not results or not any(len(v) > 0 for v in results.values()):
+            QMessageBox.information(self, "No Results", "No results to import.")
+            return
+
+        storage = self._storage
+        if storage is None:
+            from ..storage import FileStorage
+            output_dir = self._storage_config.get("output_directory") or None
+            storage = FileStorage(output_directory=output_dir)
+
+        count = 0
+        from .utils import clean_material_for_export
+        for db_id, materials in results.items():
+            for mat in materials:
+                try:
+                    cleaned = clean_material_for_export(mat)
+                    cleaned["source_database"] = db_id
+                    storage.save_material(cleaned, search_query="manual_import")
+                    count += 1
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning(f"Import failed for material: {exc}")
+
+        QMessageBox.information(
+            self, "Import Complete",
+            f"Imported {count} material(s) into {self._storage_backend_type.value} storage."
+        )
+
+    def _show_storage_stats(self) -> None:
+        """Show storage statistics dialog."""
+        storage = self._storage
+        if storage is None:
+            from ..storage import FileStorage
+            output_dir = self._storage_config.get("output_directory") or None
+            storage = FileStorage(output_directory=output_dir)
+
+        try:
+            total = storage.count_materials()
+            sources = {}
+            for name in ["Materials Project", "JARVIS", "AFLOW", "Alexandria",
+                         "Materials Cloud", "OQMD", "MPDS", "OPTIMADE"]:
+                c = storage.count_materials(source_database=name)
+                if c > 0:
+                    sources[name] = c
+
+            lines = [
+                f"<b>Backend:</b> {self._storage_backend_type.value.capitalize()}",
+                f"<b>Total materials:</b> {total}",
+                "",
+                "<b>By source database:</b>",
+            ]
+            if sources:
+                for name, c in sorted(sources.items(), key=lambda x: -x[1]):
+                    lines.append(f"  • {name}: {c}")
+            else:
+                lines.append("  (none)")
+
+            QMessageBox.information(self, "Storage Statistics", "<br>".join(lines))
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Could not retrieve statistics:\n{exc}")
+
+    def _auto_save_to_storage(self, results: dict) -> None:
+        """Persist fetched results into the active storage backend."""
+        if self._storage is None:
+            return
+        from .utils import clean_material_for_export
+        count = 0
+        for db_id, materials in results.items():
+            for mat in materials:
+                try:
+                    cleaned = clean_material_for_export(mat)
+                    cleaned["source_database"] = db_id
+                    self._storage.save_material(cleaned, search_query=self.search_input.text().strip())
+                    count += 1
+                except Exception:
+                    pass
+        if count:
+            self.status_bar.showMessage(
+                self.status_bar.currentMessage() + f" | {count} saved to {self._storage_backend_type.value} storage."
+            )
     
     def _export_json(self):
         """Export results to JSON."""
@@ -665,5 +886,12 @@ class MainWindow(QMainWindow):
             
             self.fetch_worker.cancel()
             self.fetch_worker.wait()
+
+        # Close storage backend
+        if self._storage is not None:
+            try:
+                self._storage.close()
+            except Exception:
+                pass
 
         event.accept()

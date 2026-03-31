@@ -42,6 +42,9 @@ class ResultsViewWidget(QWidget):
         super().__init__(parent)
         self.results_data = {}
         self.current_selection = None
+        self._current_materials: List[Dict] = []
+        self._sort_column: int = -1
+        self._sort_order: Qt.SortOrder = Qt.SortOrder.AscendingOrder
         self._setup_ui()
     
     def _setup_ui(self):
@@ -175,6 +178,9 @@ class ResultsViewWidget(QWidget):
             }
         """)
         self.results_table.cellClicked.connect(self._on_table_cell_clicked)
+        self.results_table.setSortingEnabled(False)  # we sort manually
+        self.results_table.horizontalHeader().setSortIndicatorShown(True)
+        self.results_table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
         table_layout.addWidget(self.results_table)
         
         self.tabs.addTab(table_widget, "📊 Table View")
@@ -441,6 +447,11 @@ class ResultsViewWidget(QWidget):
     
     def _populate_table(self, materials: List[Dict]):
         """Populate the results table with materials."""
+        self._current_materials = list(materials)
+        self._render_table(materials)
+
+    def _render_table(self, materials: List[Dict]):
+        """Render materials into the table widget."""
         if not materials:
             self.results_table.setRowCount(0)
             return
@@ -493,6 +504,49 @@ class ResultsViewWidget(QWidget):
                 self.current_selection = material
                 self._update_json_view(material)
                 self.material_selected.emit(material)
+
+    def _on_header_clicked(self, logical_index: int):
+        """Sort table by the clicked column header."""
+        if self._sort_column == logical_index:
+            # Toggle sort order
+            self._sort_order = (
+                Qt.SortOrder.DescendingOrder
+                if self._sort_order == Qt.SortOrder.AscendingOrder
+                else Qt.SortOrder.AscendingOrder
+            )
+        else:
+            self._sort_column = logical_index
+            self._sort_order = Qt.SortOrder.AscendingOrder
+
+        self.results_table.horizontalHeader().setSortIndicator(
+            logical_index, self._sort_order
+        )
+
+        if not self._current_materials:
+            return
+
+        # Determine the property key for this column
+        if logical_index == 0:
+            key = '_db_id'
+        else:
+            col_idx = logical_index - 1
+            if col_idx < len(SUMMARY_COLUMNS):
+                key = SUMMARY_COLUMNS[col_idx][0]
+            else:
+                return
+
+        reverse = self._sort_order == Qt.SortOrder.DescendingOrder
+
+        def sort_key(mat):
+            val = mat.get(key)
+            if val is None:
+                return (1, "")  # push None to end
+            if isinstance(val, (int, float)):
+                return (0, val)
+            return (0, str(val).lower())
+
+        self._current_materials.sort(key=sort_key, reverse=reverse)
+        self._render_table(self._current_materials)
     
     def _update_json_view(self, data: Any):
         """Update the JSON view with data."""

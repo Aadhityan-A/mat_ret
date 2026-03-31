@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mat_ret"
-version = "0.3.1"
+version = "0.3.4"
 description = "Unified retrieval and property mapping for materials databases (Materials Project, JARVIS, AFLOW, Alexandria, Materials Cloud, MPDS)"
 authors = [
     { name = "Aadhityan A", email = "aadhityan1995@gmail.com" }
@@ -12,6 +12,18 @@ authors = [
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 dependencies = [
     "pymatgen",
     "requests",
@@ -28,14 +40,20 @@ dependencies = [
     "tqdm",
     "urllib3",
     "mpds-client",
-    "PyQt6>=6.4.0",
-    "pyqtgraph>=0.13.0",
-    "PyOpenGL>=3.1.0"
 ]
 
 [project.optional-dependencies]
+gui = [
+    "PyQt6>=6.4.0",
+    "pyqtgraph>=0.13.0",
+    "PyOpenGL>=3.1.0",
+]
+mongodb = [
+    "pymongo>=4.0",
+]
 dev = [
-    "pytest>=7.0"
+    "pytest>=7.0",
+    "mongomock>=4.0",
 ]
 
 [project.scripts]
