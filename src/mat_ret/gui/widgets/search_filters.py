@@ -7,9 +7,11 @@ electronic, energetic, structural, mechanical, magnetic, and other properties.
 
 from typing import Optional
 
+import re
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox, QPushButton,
+    QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox, QPushButton, QLineEdit,
     QFrame, QSizePolicy,
 )
 from PyQt6.QtCore import pyqtSignal, Qt
@@ -18,11 +20,23 @@ from PyQt6.QtGui import QFont
 from .collapsible import CollapsibleSection
 from ...search import SearchFilters, CRYSTAL_SYSTEMS
 
+
+def _parse_element_list(text: str):
+    """Parse a free-text element list (e.g. ``"Fe, O"``) into symbols, or None."""
+    tokens = [tok.strip() for tok in re.split(r"[,\s/]+", text or "") if tok.strip()]
+    cleaned = []
+    for tok in tokens:
+        sym = tok[0].upper() + tok[1:].lower() if tok else tok
+        if sym and sym not in cleaned:
+            cleaned.append(sym)
+    return cleaned or None
+
 # Which databases natively support each filter group (for tooltips)
 _DB_SUPPORT = {
     "Electronic": "Server-side: Materials Project. Post-filter: JARVIS, AFLOW, OQMD, Alexandria, Materials Cloud, OPTIMADE.",
     "Energetic": "Server-side: Materials Project, OQMD. Post-filter: JARVIS, AFLOW, Alexandria, Materials Cloud, OPTIMADE.",
     "Structural": "Server-side: Materials Project, AFLOW (space group, nelements), OPTIMADE (nelements/nsites). Post-filter: others.",
+    "Composition": "Post-filter on all databases — require / exclude specific elements (uses each result's element set).",
     "Mechanical": "Post-filter on all databases (bulk/shear modulus returned by MP, JARVIS, AFLOW).",
     "Magnetic": "Server-side: Materials Project. Post-filter: JARVIS.",
     "Other": "Exclude theoretical: Materials Project only.",
@@ -33,6 +47,7 @@ _SECTION_ICONS = {
     "Electronic": "⚡",
     "Energetic": "🔋",
     "Structural": "🔬",
+    "Composition": "🧪",
     "Mechanical": "⚙️",
     "Magnetic": "🧲",
     "Other": "📋",
@@ -262,6 +277,35 @@ class SearchFiltersWidget(QWidget):
 
         outer.addWidget(sec)
 
+        # --- Composition ---
+        sec = CollapsibleSection("Composition", icon=_SECTION_ICONS["Composition"], expanded=False)
+        sec.setToolTip(_DB_SUPPORT["Composition"])
+        lay = sec.content_layout()
+
+        _line_ss = (
+            "QLineEdit { padding: 4px 6px; border: 1px solid #d0d5dd; "
+            "border-radius: 4px; font-size: 11px; background: #fafbfc; } "
+            "QLineEdit:focus { border: 1.5px solid #1976D2; background: white; }"
+        )
+
+        row = QHBoxLayout()
+        row.addWidget(_label("Must contain:"))
+        self.include_elements_edit = QLineEdit()
+        self.include_elements_edit.setPlaceholderText("e.g. Fe, O")
+        self.include_elements_edit.setStyleSheet(_line_ss)
+        row.addWidget(self.include_elements_edit)
+        lay.addLayout(row)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(_label("Exclude:"))
+        self.exclude_elements_edit = QLineEdit()
+        self.exclude_elements_edit.setPlaceholderText("e.g. Pb, Hg")
+        self.exclude_elements_edit.setStyleSheet(_line_ss)
+        row2.addWidget(self.exclude_elements_edit)
+        lay.addLayout(row2)
+
+        outer.addWidget(sec)
+
         # --- Mechanical ---
         sec = CollapsibleSection("Mechanical", icon=_SECTION_ICONS["Mechanical"], expanded=False)
         sec.setToolTip(_DB_SUPPORT["Mechanical"])
@@ -380,6 +424,9 @@ class SearchFiltersWidget(QWidget):
         for cb in (self.is_stable_cb, self.exclude_theoretical_cb):
             cb.stateChanged.connect(self._on_change)
 
+        for edit in (self.include_elements_edit, self.exclude_elements_edit):
+            edit.textChanged.connect(self._on_change)
+
     def _on_change(self, *_args) -> None:
         f = self.get_filters()
         count = f.active_filter_count()
@@ -440,6 +487,8 @@ class SearchFiltersWidget(QWidget):
             num_elements_max=self._opt_int(self.num_elements_max),
             num_sites_min=self._opt_int(self.num_sites_min),
             num_sites_max=self._opt_int(self.num_sites_max),
+            include_elements=_parse_element_list(self.include_elements_edit.text()),
+            exclude_elements=_parse_element_list(self.exclude_elements_edit.text()),
             bulk_modulus_min=self._opt_float(self.bulk_mod_min),
             bulk_modulus_max=self._opt_float(self.bulk_mod_max),
             shear_modulus_min=self._opt_float(self.shear_mod_min),
@@ -476,3 +525,5 @@ class SearchFiltersWidget(QWidget):
         self.mag_ordering_combo.setCurrentIndex(0)
         self.is_stable_cb.setChecked(False)
         self.exclude_theoretical_cb.setChecked(False)
+        self.include_elements_edit.clear()
+        self.exclude_elements_edit.clear()

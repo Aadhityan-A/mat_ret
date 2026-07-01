@@ -23,6 +23,35 @@ CRYSTAL_SYSTEMS = (
     "triclinic",
 )
 
+# A material is treated as metallic when its band gap is at or below this value.
+# Used as a tolerance so floating-point gaps stored as ~0 are still "metallic".
+_METAL_BG_EPS = 1e-6
+
+# Every ``None``-defaulted filter attribute on :class:`SearchFilters`.  Listing the
+# names once (instead of duplicating the tuple in ``has_any_filter`` and
+# ``active_filter_count``) keeps the introspection helpers in sync when fields are
+# added.  ``exclude_theoretical`` is a plain ``bool`` and is handled separately.
+_FILTER_ATTRS = (
+    # Electronic
+    "band_gap_min", "band_gap_max", "is_metal",
+    # Energetic
+    "formation_energy_min", "formation_energy_max",
+    "energy_above_hull_max", "is_stable",
+    # Structural
+    "density_min", "density_max", "volume_min", "volume_max",
+    "space_group_number", "crystal_system",
+    "num_elements_min", "num_elements_max",
+    "num_sites_min", "num_sites_max",
+    # Composition
+    "include_elements", "exclude_elements",
+    # Mechanical
+    "bulk_modulus_min", "bulk_modulus_max",
+    "shear_modulus_min", "shear_modulus_max",
+    # Magnetic
+    "magnetic_ordering",
+    "total_magnetization_min", "total_magnetization_max",
+)
+
 
 @dataclass(frozen=True)
 class SearchQuery:
@@ -66,6 +95,10 @@ class SearchFilters:
     num_sites_min: Optional[int] = None
     num_sites_max: Optional[int] = None
 
+    # Composition — must contain ALL of include_elements, NONE of exclude_elements
+    include_elements: Optional[List[str]] = None
+    exclude_elements: Optional[List[str]] = None
+
     # Mechanical
     bulk_modulus_min: Optional[float] = None
     bulk_modulus_max: Optional[float] = None
@@ -80,43 +113,23 @@ class SearchFilters:
     # Other
     exclude_theoretical: bool = False
 
+    def __post_init__(self) -> None:
+        # Treat empty element lists as "no filter" so introspection stays accurate.
+        if self.include_elements is not None and not self.include_elements:
+            self.include_elements = None
+        if self.exclude_elements is not None and not self.exclude_elements:
+            self.exclude_elements = None
+
     def has_any_filter(self) -> bool:
         """Return ``True`` if at least one filter is set."""
-        for attr_name in (
-            "band_gap_min", "band_gap_max", "is_metal",
-            "formation_energy_min", "formation_energy_max",
-            "energy_above_hull_max", "is_stable",
-            "density_min", "density_max", "volume_min", "volume_max",
-            "space_group_number", "crystal_system",
-            "num_elements_min", "num_elements_max",
-            "num_sites_min", "num_sites_max",
-            "bulk_modulus_min", "bulk_modulus_max",
-            "shear_modulus_min", "shear_modulus_max",
-            "magnetic_ordering",
-            "total_magnetization_min", "total_magnetization_max",
-        ):
+        for attr_name in _FILTER_ATTRS:
             if getattr(self, attr_name) is not None:
                 return True
         return self.exclude_theoretical
 
     def active_filter_count(self) -> int:
         """Return the number of active (non-default) filters."""
-        count = 0
-        for attr_name in (
-            "band_gap_min", "band_gap_max", "is_metal",
-            "formation_energy_min", "formation_energy_max",
-            "energy_above_hull_max", "is_stable",
-            "density_min", "density_max", "volume_min", "volume_max",
-            "space_group_number", "crystal_system",
-            "num_elements_min", "num_elements_max",
-            "num_sites_min", "num_sites_max",
-            "bulk_modulus_min", "bulk_modulus_max",
-            "shear_modulus_min", "shear_modulus_max",
-            "magnetic_ordering",
-            "total_magnetization_min", "total_magnetization_max",
-        ):
-            if getattr(self, attr_name) is not None:
-                count += 1
+        count = sum(1 for attr_name in _FILTER_ATTRS if getattr(self, attr_name) is not None)
         if self.exclude_theoretical:
             count += 1
         return count
@@ -272,8 +285,9 @@ def apply_post_filters(
         if filters.is_metal is True:
             val = mat.get(_key("is_metallic"))
             if val is None:
+                # No explicit flag: infer from band gap (metal ⇒ gap ≈ 0).
                 bg = _safe_float(mat.get(_key("band_gap")))
-                if bg is None or bg > 0:
+                if bg is None or bg > _METAL_BG_EPS:
                     continue
             elif not val:
                 continue
@@ -281,7 +295,7 @@ def apply_post_filters(
             val = mat.get(_key("is_metallic"))
             if val is None:
                 bg = _safe_float(mat.get(_key("band_gap")))
-                if bg is not None and bg == 0:
+                if bg is not None and bg <= _METAL_BG_EPS:
                     continue
             elif val:
                 continue
@@ -345,7 +359,9 @@ def apply_post_filters(
             if filters.num_elements_max is not None and nel > filters.num_elements_max:
                 continue
         if filters.num_sites_min is not None or filters.num_sites_max is not None:
-            nsites = mat.get("num_sites") or mat.get("nsites")
+            nsites = mat.get(_key("num_sites"))
+            if nsites is None:
+                nsites = mat.get("num_sites") or mat.get("nsites")
             if nsites is None:
                 structure = mat.get("structure")
                 nsites = len(structure) if structure is not None and hasattr(structure, "__len__") else None
@@ -356,6 +372,29 @@ def apply_post_filters(
                 continue
             if filters.num_sites_max is not None and nsites > filters.num_sites_max:
                 continue
+
+        # -- Composition (require / exclude specific elements) --
+        if filters.include_elements or filters.exclude_elements:
+            present = mat.get(_key("elements")) or mat.get("elements")
+            if present:
+                present_set = {str(sym).strip() for sym in present if str(sym).strip()}
+            else:
+                formula_str = mat.get(_key("formula")) or mat.get("formula") or ""
+                present_set = _extract_symbols_from_formula(str(formula_str))
+            if filters.include_elements:
+                try:
+                    required = set(normalize_elements(filters.include_elements))
+                except ValueError:
+                    required = {str(sym).strip() for sym in filters.include_elements}
+                if not required.issubset(present_set):
+                    continue
+            if filters.exclude_elements:
+                try:
+                    banned = set(normalize_elements(filters.exclude_elements))
+                except ValueError:
+                    banned = {str(sym).strip() for sym in filters.exclude_elements}
+                if banned & present_set:
+                    continue
 
         # -- Mechanical --
         if filters.bulk_modulus_min is not None:
@@ -381,12 +420,30 @@ def apply_post_filters(
             if val is None or str(val).lower() != filters.magnetic_ordering.lower():
                 continue
         if filters.total_magnetization_min is not None:
-            val = _safe_float(mat.get(_key("magnetic_moment")) or mat.get("total_magnetization"))
+            val = _safe_float(
+                mat.get(_key("magnetic_moment"))
+                or mat.get(_key("total_magnetization"))
+                or mat.get("total_magnetization")
+            )
             if val is None or val < filters.total_magnetization_min:
                 continue
         if filters.total_magnetization_max is not None:
-            val = _safe_float(mat.get(_key("magnetic_moment")) or mat.get("total_magnetization"))
+            val = _safe_float(
+                mat.get(_key("magnetic_moment"))
+                or mat.get(_key("total_magnetization"))
+                or mat.get("total_magnetization")
+            )
             if val is None or val > filters.total_magnetization_max:
+                continue
+
+        # -- Other --
+        # Best-effort theoretical exclusion. Databases like Materials Project apply
+        # this server-side; this post-filter drops entries explicitly flagged as
+        # theoretical (or whose functional string says so) for the remaining ones.
+        if filters.exclude_theoretical:
+            is_theo = mat.get("is_theoretical")
+            func = mat.get(_key("functional"))
+            if is_theo is True or (func is not None and "theoretical" in str(func).lower()):
                 continue
 
         filtered.append(mat)

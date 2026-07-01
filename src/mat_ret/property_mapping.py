@@ -29,7 +29,10 @@ STANDARD_PROPERTIES = {
     'volume': 'volume',
     'lattice_parameters': 'lattice_parameters',
     'crystal_system': 'crystal_system',
-    
+    'num_sites': 'num_sites',
+    'num_elements': 'num_elements',
+    'elements': 'elements',
+
     # Electronic Properties
     'band_gap': 'band_gap',
     'band_gap_direct': 'band_gap_direct',
@@ -257,6 +260,9 @@ PROPERTY_UNITS = {
     'dielectric_constant': 'dimensionless',
     'optical_absorption': 'cm⁻¹',
     'space_group_number': 'dimensionless',
+    'num_sites': 'count',
+    'num_elements': 'count',
+    'elements': 'list',
     'lattice_parameters': 'Å',
     'crystal_system': 'categorical',
     'is_metallic': 'boolean',

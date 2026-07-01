@@ -556,9 +556,10 @@ class MainWindow(QMainWindow):
             api_keys=api_keys,
             optimade_providers=optimade_providers,
             filters=self.search_filters.get_filters(),
+            retrieve_all=self.database_selector.get_retrieve_all(),
         )
-    
-    def _start_fetch(self, query: SearchQuery, databases: list, limit: int, api_keys: dict, optimade_providers: list, filters=None):
+
+    def _start_fetch(self, query: SearchQuery, databases: list, limit: int, api_keys: dict, optimade_providers: list, filters=None, retrieve_all: bool = False):
         """Start the fetch worker."""
         # Update UI
         self.search_button.setEnabled(False)
@@ -580,8 +581,9 @@ class MainWindow(QMainWindow):
             mpds_api_key=api_keys.get('mpds_api_key'),
             optimade_providers=optimade_providers,
             filters=filters,
+            retrieve_all=retrieve_all,
         )
-        
+
         self.fetch_worker.status_update.connect(self._on_status_update)
         self.fetch_worker.database_complete.connect(self._on_database_complete)
         self.fetch_worker.error.connect(self._on_fetch_error)
@@ -600,9 +602,8 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(message)
     
     def _on_database_complete(self, db_id: str, results: list):
-        """Handle completion of a single database fetch."""
-        # Could update UI incrementally here if desired
-        pass
+        """Handle completion of a single database fetch — show results live."""
+        self.results_view.append_results(db_id, results)
     
     def _on_fetch_error(self, db_id: str, error: str):
         """Handle fetch error."""

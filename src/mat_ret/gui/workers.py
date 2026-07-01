@@ -9,6 +9,10 @@ from PyQt6.QtCore import QThread, pyqtSignal, QObject
 
 from ..search import SearchFilters
 
+# Per-database cap applied when the user asks to "retrieve all" matches.  This is
+# a safety ceiling, not a true unbounded fetch, mirroring the library default.
+RETRIEVE_ALL_LIMIT = 2000
+
 
 class FetchWorker(QThread):
     """Worker thread for fetching materials from databases."""
@@ -30,6 +34,7 @@ class FetchWorker(QThread):
                  query_mode: str = "formula",
                  elements: Optional[List[str]] = None,
                  filters: Optional[SearchFilters] = None,
+                 retrieve_all: bool = False,
                  parent=None):
         super().__init__(parent)
         self.formula = formula
@@ -37,6 +42,7 @@ class FetchWorker(QThread):
         self.elements = elements or []
         self.databases = databases
         self.limit = limit
+        self.retrieve_all = retrieve_all
         self.mp_api_key = mp_api_key
         self.mpds_api_key = mpds_api_key
         self.optimade_providers = optimade_providers or []
@@ -127,7 +133,12 @@ class FetchWorker(QThread):
         }
         
         total_dbs = len(self.databases)
-        
+        effective_limit = RETRIEVE_ALL_LIMIT if self.retrieve_all else self.limit
+        if self.retrieve_all:
+            self.status_update.emit(
+                f"Retrieve-all enabled: fetching up to {RETRIEVE_ALL_LIMIT} per database (slow)."
+            )
+
         for i, db_id in enumerate(self.databases):
             if self._is_cancelled:
                 self.status_update.emit("Fetch cancelled")
@@ -153,7 +164,7 @@ class FetchWorker(QThread):
             
             try:
                 # Build kwargs
-                kwargs = {'limit': self.limit}
+                kwargs = {'limit': effective_limit}
                 if self.query_mode == "elements_all" and self.elements:
                     kwargs["elements"] = list(self.elements)
                 

@@ -9,7 +9,10 @@ from .databases import (
     MaterialsCloudClient,
     MPDSClient,
     OQMDClient,
+    OptimadeSearchClient,
     MaterialsDatabaseRetriever,
+    merge_duplicate_materials,
+    SUPPORTED_DATABASES,
 )
 from .property_mapping import (
     STANDARD_PROPERTIES,
@@ -20,7 +23,7 @@ from .property_mapping import (
     standardize_properties,
     export_property_mappings,
 )
-from .search import SearchFilters
+from .search import SearchFilters, SearchQuery, apply_post_filters, parse_search_text
 from .api import (
     fetch_materials_project,
     fetch_jarvis,
@@ -49,7 +52,10 @@ __all__ = [
     "MaterialsCloudClient",
     "MPDSClient",
     "OQMDClient",
+    "OptimadeSearchClient",
     "MaterialsDatabaseRetriever",
+    "merge_duplicate_materials",
+    "SUPPORTED_DATABASES",
     "STANDARD_PROPERTIES",
     "PROPERTY_UNITS",
     "DATABASE_PROPERTY_MAPPINGS",
@@ -58,6 +64,9 @@ __all__ = [
     "standardize_properties",
     "export_property_mappings",
     "SearchFilters",
+    "SearchQuery",
+    "apply_post_filters",
+    "parse_search_text",
     "fetch_materials_project",
     "fetch_jarvis",
     "fetch_aflow",

@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QSpinBox, QPushButton,
+    QLabel, QLineEdit, QSpinBox, QPushButton, QCheckBox,
     QFrame, QFormLayout, QTreeWidget, QTreeWidgetItem
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QThread
@@ -262,7 +262,7 @@ class DatabaseSelectorWidget(QWidget):
         settings_form.setContentsMargins(0, 0, 0, 0)
 
         self.limit_spinner = QSpinBox()
-        self.limit_spinner.setRange(1, 100)
+        self.limit_spinner.setRange(1, 5000)
         self.limit_spinner.setValue(10)
         self.limit_spinner.setSuffix(" results")
         self.limit_spinner.setStyleSheet("""
@@ -275,6 +275,18 @@ class DatabaseSelectorWidget(QWidget):
         settings_form.addRow("Limit per DB:", self.limit_spinner)
 
         settings_lay.addLayout(settings_form)
+
+        self.retrieve_all_cb = QCheckBox("Retrieve all matches (slow — ignores limit)")
+        self.retrieve_all_cb.setStyleSheet("font-size: 11px; color: #444;")
+        self.retrieve_all_cb.setToolTip(
+            "Fetch as many matching materials as each database returns, up to an "
+            "internal safety cap. Much slower than a fixed per-database limit."
+        )
+        self.retrieve_all_cb.toggled.connect(
+            lambda checked: self.limit_spinner.setEnabled(not checked)
+        )
+        settings_lay.addWidget(self.retrieve_all_cb)
+
         layout.addWidget(settings_sec)
 
         layout.addStretch()
@@ -443,6 +455,10 @@ class DatabaseSelectorWidget(QWidget):
     def get_limit(self) -> int:
         """Return the results limit per database."""
         return self.limit_spinner.value()
+
+    def get_retrieve_all(self) -> bool:
+        """Return whether the user requested retrieving all matches."""
+        return self.retrieve_all_cb.isChecked()
 
     def get_database_config(self) -> dict:
         """Return the database configuration."""

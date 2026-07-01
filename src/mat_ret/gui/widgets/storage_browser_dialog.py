@@ -90,6 +90,17 @@ class StorageBrowserDialog(QDialog):
         self._bg_max.setMaximumWidth(60)
         filter_bar.addWidget(self._bg_max)
 
+        filter_bar.addWidget(QLabel("Elements:"))
+        self._elements_edit = QLineEdit()
+        self._elements_edit.setPlaceholderText("Fe, O")
+        self._elements_edit.setMaximumWidth(100)
+        filter_bar.addWidget(self._elements_edit)
+
+        filter_bar.addWidget(QLabel("E hull ≤"))
+        self._ehull_max = QLineEdit()
+        self._ehull_max.setMaximumWidth(60)
+        filter_bar.addWidget(self._ehull_max)
+
         self._search_btn = QPushButton("Search")
         self._search_btn.clicked.connect(self._on_search)
         filter_bar.addWidget(self._search_btn)
@@ -175,6 +186,21 @@ class StorageBrowserDialog(QDialog):
             kwargs["band_gap_max"] = bg_max
         except (ValueError, TypeError):
             pass
+
+        elements_text = self._elements_edit.text().strip()
+        if elements_text:
+            import re
+            elems = [t.strip() for t in re.split(r"[,\s/]+", elements_text) if t.strip()]
+            if elems:
+                kwargs["elements"] = elems
+
+        try:
+            ehull_max = float(self._ehull_max.text())
+            from ...search import SearchFilters
+            kwargs["filters"] = SearchFilters(energy_above_hull_max=ehull_max)
+        except (ValueError, TypeError):
+            pass
+
         return kwargs
 
     def _refresh(self) -> None:
@@ -218,6 +244,8 @@ class StorageBrowserDialog(QDialog):
         self._crystal_combo.setCurrentIndex(0)
         self._bg_min.clear()
         self._bg_max.clear()
+        self._elements_edit.clear()
+        self._ehull_max.clear()
         self._page = 0
         self._refresh()
 

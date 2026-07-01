@@ -86,7 +86,7 @@ def main():
     fmt = QSurfaceFormat()
     fmt.setDepthBufferSize(24)
     fmt.setStencilBufferSize(8)
-    fmt.setSamples(4)
+    fmt.setSamples(8)  # 8x MSAA for smooth, anti-aliased atom/bond edges
     fmt.setSwapInterval(1)
     QSurfaceFormat.setDefaultFormat(fmt)
 

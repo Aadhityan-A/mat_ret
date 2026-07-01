@@ -209,18 +209,47 @@ def harvest_optimade(
 
 
 def fetch_all_databases(
-    formula: str,
+    formula: Optional[str] = None,
     *,
+    elements: Optional[List[str]] = None,
+    databases: Optional[List[str]] = None,
+    filters: Optional[SearchFilters] = None,
     limit_per_database: int = 3,
+    retrieve_all: bool = False,
+    hard_limit_per_database: int = 2000,
+    parallel: bool = False,
+    save_cif: bool = True,
+    merge_duplicates: bool = False,
     mp_api_key: Optional[str] = None,
     mpds_api_key: Optional[str] = None,
     output_directory: Optional[Path] = None,
     storage=None,
-) -> Dict[str, List[Dict]]:
+) -> Union[Dict[str, List[Dict]], Dict]:
     """Retrieve structures from every available database client.
 
     Parameters
     ----------
+    formula:
+        Composition formula (e.g. ``"Fe2O3"``).  Optional when *elements* is given.
+    elements:
+        Element-set (chemsys) search returning materials that contain **all** of
+        these elements.
+    databases:
+        Restrict retrieval to a subset of supported databases (see
+        :data:`mat_ret.databases.SUPPORTED_DATABASES`).
+    filters:
+        A :class:`~mat_ret.search.SearchFilters` applied across all databases.
+    retrieve_all:
+        Query each database up to *hard_limit_per_database* (a safety cap) rather
+        than *limit_per_database*.
+    parallel:
+        Query databases concurrently.
+    save_cif:
+        Write CIF + metadata files per result (default ``True``).
+    merge_duplicates:
+        When ``True`` return a unified envelope ``{"materials", "by_database",
+        "metadata"}`` with cross-database de-duplication, instead of the default
+        ``{db_name: [materials]}`` mapping.
     storage:
         Optional :class:`~mat_ret.storage.base.StorageBackend` instance.
         When provided, every retrieved material is also persisted into the
@@ -231,8 +260,20 @@ def fetch_all_databases(
         mpds_api_key=mpds_api_key,
         output_directory=_sanitize_output_directory(output_directory),
         storage=storage,
+        databases=databases,
     )
-    return retriever.retrieve_materials(formula, limit_per_db=limit_per_database)
+    call_kwargs = dict(
+        elements=elements,
+        filters=filters,
+        databases=databases,
+        retrieve_all=retrieve_all,
+        hard_limit_per_db=hard_limit_per_database,
+        parallel=parallel,
+        save_cif=save_cif,
+    )
+    if merge_duplicates:
+        return retriever.retrieve_unified(formula, limit_per_database, **call_kwargs)
+    return retriever.retrieve_materials(formula, limit_per_database, **call_kwargs)
 
 
 def generate_xrd_pattern_from_structure(

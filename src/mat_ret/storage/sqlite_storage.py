@@ -202,6 +202,7 @@ class SQLiteStorage(StorageBackend):
         crystal_system: Optional[str] = None,
         band_gap_min: Optional[float] = None,
         band_gap_max: Optional[float] = None,
+        filters: Optional[Any] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -228,22 +229,33 @@ class SQLiteStorage(StorageBackend):
             params.append(band_gap_max)
 
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = f"SELECT * FROM materials{where} ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
 
+        # When element membership or a SearchFilters object must be applied in
+        # Python, we cannot push LIMIT/OFFSET into SQL (it would truncate before
+        # the post-filter runs).  Fetch the candidate set, post-filter, then page.
+        needs_post = bool(elements) or (filters is not None and filters.has_any_filter())
+
+        if not needs_post:
+            sql = f"SELECT * FROM materials{where} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            cur = self._conn.execute(sql, [*params, limit, offset])
+            return [self._row_to_dict(r) for r in cur.fetchall()]
+
+        sql = f"SELECT * FROM materials{where} ORDER BY created_at DESC"
         cur = self._conn.execute(sql, params)
-        rows = cur.fetchall()
+        results = [self._hoist_computed(self._row_to_dict(r)) for r in cur.fetchall()]
 
-        results = [self._row_to_dict(r) for r in rows]
-
-        # Post-filter by elements (JSON array in TEXT column)
         if elements:
             needed = {e.lower() for e in elements}
             results = [
                 r for r in results
-                if needed.issubset({e.lower() for e in (r.get("elements") or [])})
+                if needed.issubset({str(e).lower() for e in (r.get("elements") or [])})
             ]
-        return results
+        if filters is not None and filters.has_any_filter():
+            from ..search import apply_post_filters
+            from ..property_mapping import STANDARD_PROPERTIES
+            results = apply_post_filters(results, filters, STANDARD_PROPERTIES)
+
+        return results[offset: offset + limit]
 
     def list_materials(self, *, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         cur = self._conn.execute(
@@ -286,6 +298,20 @@ class SQLiteStorage(StorageBackend):
             self._conn = None  # type: ignore[assignment]
 
     # -- helpers ---------------------------------------------------------------
+
+    @staticmethod
+    def _hoist_computed(mat: Dict[str, Any]) -> Dict[str, Any]:
+        """Lift computed keys (num_sites/num_elements/elements) out of raw_data.
+
+        These are not promoted to dedicated columns, so ``apply_post_filters``
+        needs them surfaced at the top level to filter on.
+        """
+        raw = mat.get("raw_data")
+        if isinstance(raw, dict):
+            for key in ("num_sites", "num_elements", "elements"):
+                if mat.get(key) in (None, "", []) and raw.get(key) is not None:
+                    mat[key] = raw[key]
+        return mat
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:

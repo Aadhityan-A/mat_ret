@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QLabel, QHeaderView, QAbstractItemView, QFrame,
     QPushButton, QMenu, QFileDialog, QMessageBox, QTextEdit,
-    QTabWidget, QScrollArea
+    QTabWidget, QScrollArea, QCheckBox
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QSize
 from PyQt6.QtGui import QFont, QColor, QBrush, QAction
@@ -252,7 +252,16 @@ class ResultsViewWidget(QWidget):
         self.export_csv_btn.clicked.connect(self._export_csv)
         self.export_csv_btn.setEnabled(False)
         export_layout.addWidget(self.export_csv_btn)
-        
+
+        self.dedupe_cb = QCheckBox("Merge duplicates across databases")
+        self.dedupe_cb.setStyleSheet("font-size: 11px; color: #555;")
+        self.dedupe_cb.setToolTip(
+            "In the 'All Results' view, collapse the same material reported by "
+            "multiple databases into a single merged row."
+        )
+        self.dedupe_cb.toggled.connect(self._on_dedupe_toggled)
+        export_layout.addWidget(self.dedupe_cb)
+
         export_layout.addStretch()
         right_layout.addLayout(export_layout)
         
@@ -274,6 +283,23 @@ class ResultsViewWidget(QWidget):
         self.export_json_btn.setEnabled(has_results)
         self.export_csv_btn.setEnabled(has_results)
     
+    def append_results(self, db_id: str, materials: List[Dict]):
+        """Incrementally add one database's results and refresh the view.
+
+        Lets the UI populate live as each database finishes rather than waiting
+        for every database to complete.
+        """
+        self.results_data[db_id] = materials or []
+        self._populate_database_tree()
+        self._update_results_count()
+        has_results = any(len(v) > 0 for v in self.results_data.values())
+        self.export_json_btn.setEnabled(has_results)
+        self.export_csv_btn.setEnabled(has_results)
+
+    def _on_dedupe_toggled(self, _checked: bool):
+        """Re-render the all-results view when the merge toggle changes."""
+        self._show_all_results()
+
     def clear_results(self):
         """Clear all results."""
         self.results_data = {}
@@ -404,14 +430,31 @@ class ResultsViewWidget(QWidget):
             self._show_database_results(data)
     
     def _show_all_results(self):
-        """Show all results in the table."""
+        """Show all results in the table (optionally de-duplicated across DBs)."""
+        if getattr(self, "dedupe_cb", None) is not None and self.dedupe_cb.isChecked():
+            try:
+                from ...databases import merge_duplicate_materials
+                merged = merge_duplicate_materials(self.results_data)
+            except Exception:
+                merged = None
+            if merged is not None:
+                all_materials = []
+                for mat in merged:
+                    mat_copy = mat.copy()
+                    sources = mat_copy.get("source_databases") or [mat_copy.get("_db_id", "")]
+                    mat_copy['_db_id'] = "+".join(str(s) for s in sources if s)
+                    all_materials.append(mat_copy)
+                self._populate_table(all_materials)
+                self._update_json_view({"merged": all_materials})
+                return
+
         all_materials = []
         for db_id, materials in self.results_data.items():
             for mat in materials:
                 mat_copy = mat.copy()
                 mat_copy['_db_id'] = db_id
                 all_materials.append(mat_copy)
-        
+
         self._populate_table(all_materials)
         self._update_json_view(self.results_data)
     

@@ -42,10 +42,18 @@ class StorageBackend(abc.ABC):
         crystal_system: Optional[str] = None,
         band_gap_min: Optional[float] = None,
         band_gap_max: Optional[float] = None,
+        filters: Optional[Any] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """Query stored materials with optional filters.
+
+        Parameters
+        ----------
+        filters:
+            An optional :class:`~mat_ret.search.SearchFilters` applied to the
+            stored records (in addition to the explicit keyword filters above),
+            giving storage queries parity with live retrieval filters.
 
         Returns a list of material dictionaries.
         """

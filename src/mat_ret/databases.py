@@ -72,10 +72,147 @@ from .search import (
 
 AFLOW_REST_URL = os.getenv("AFLOW_BASE_URL", "http://aflowlib.duke.edu/search/API/")
 
+# Canonical identifiers for every database client this module can build.  Used to
+# validate ``databases=`` subsets and to drive the unified retriever.
+SUPPORTED_DATABASES = (
+    "materials_project",
+    "jarvis",
+    "aflow",
+    "alexandria",
+    "materials_cloud",
+    "optimade",
+    "oqmd",
+    "mpds",
+)
+
+# Safety cap for ``retrieve_all`` so an unbounded fetch can never run away.
+DEFAULT_HARD_LIMIT_PER_DB = 2000
+
+
 def _build_optimade_elements_filter(elements: Iterable[str]) -> str:
     normalized = normalize_elements(elements)
     quoted = ", ".join(f'"{symbol}"' for symbol in normalized)
     return f"elements HAS ALL {quoted}"
+
+
+def _populate_computed_fields(structure_data: Dict[str, Any], fallback_formula: str = "") -> None:
+    """Fill in ``elements``/``num_elements``/``num_sites`` on a result dict.
+
+    These keys are not returned natively by most databases, yet downstream
+    filtering (``num_sites``/element inclusion) and storage element queries rely
+    on them.  We prefer the pymatgen ``structure`` object when present and fall
+    back to parsing the formula.  Existing values are never overwritten.
+    """
+    structure = structure_data.get("structure")
+
+    if "num_sites" not in structure_data and structure is not None:
+        num_sites = getattr(structure, "num_sites", None)
+        if num_sites is None and hasattr(structure, "__len__"):
+            try:
+                num_sites = len(structure)
+            except TypeError:
+                num_sites = None
+        if num_sites is not None:
+            structure_data["num_sites"] = int(num_sites)
+
+    if "elements" not in structure_data:
+        elements: Optional[List[str]] = None
+        if structure is not None:
+            try:
+                elements = sorted({sp.symbol for sp in structure.composition.elements})
+            except Exception:
+                elements = None
+        if not elements:
+            formula = structure_data.get("formula") or fallback_formula
+            if formula:
+                try:
+                    elements = sorted({el.symbol for el in Composition(str(formula)).elements})
+                except Exception:
+                    elements = None
+        if elements:
+            structure_data["elements"] = elements
+
+    if "num_elements" not in structure_data and structure_data.get("elements"):
+        structure_data["num_elements"] = len(structure_data["elements"])
+
+
+# Order in which databases "win" when merging duplicate materials: earlier wins.
+_MERGE_PRECEDENCE = (
+    "materials_project",
+    "alexandria",
+    "jarvis",
+    "aflow",
+    "oqmd",
+    "materials_cloud",
+    "optimade",
+    "mpds",
+)
+
+
+def _reduced_formula(value: Any) -> str:
+    """Reduce a formula to its canonical form, falling back to the raw string."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return Composition(text).reduced_formula
+    except Exception:
+        return text
+
+
+def merge_duplicate_materials(results_by_db: Dict[str, List[Dict]]) -> List[Dict]:
+    """Collapse the same material seen across databases into one merged record.
+
+    Two records are considered the same material when they share a reduced
+    formula together with their site count and space-group number.  When neither
+    of those structural keys is available the records are kept separate (we never
+    merge on formula alone).  Field values are filled from all sources, with the
+    database highest in :data:`_MERGE_PRECEDENCE` winning conflicts.  Each merged
+    record gains a ``source_databases`` list recording every contributing source.
+    """
+    precedence = {name: idx for idx, name in enumerate(_MERGE_PRECEDENCE)}
+    fallback_rank = len(precedence)
+    merged: Dict[Any, Dict] = {}
+    counter = 0
+
+    for db_name, materials in results_by_db.items():
+        for mat in materials:
+            red = _reduced_formula(mat.get("formula"))
+            nsites = mat.get("num_sites")
+            sg = mat.get("space_group_number")
+            if red and (nsites is not None or sg is not None):
+                key: Any = (red, nsites, sg)
+            else:
+                # Cannot confidently identify — keep as its own record.
+                key = ("__unique__", counter)
+                counter += 1
+
+            entry = merged.get(key)
+            rank = precedence.get(db_name, fallback_rank)
+            if entry is None:
+                new_entry = dict(mat)
+                new_entry.setdefault("source_database", db_name)
+                new_entry["source_databases"] = [db_name]
+                new_entry["_merge_rank"] = rank
+                merged[key] = new_entry
+            else:
+                if db_name not in entry["source_databases"]:
+                    entry["source_databases"].append(db_name)
+                higher = rank < entry["_merge_rank"]
+                for field, value in mat.items():
+                    if field in ("source_databases", "_merge_rank") or value is None:
+                        continue
+                    if entry.get(field) in (None, "") or higher:
+                        entry[field] = value
+                if higher:
+                    entry["_merge_rank"] = rank
+                    entry["source_database"] = db_name
+
+    out: List[Dict] = []
+    for entry in merged.values():
+        entry.pop("_merge_rank", None)
+        out.append(entry)
+    return out
 
 class MaterialsDatabaseClient:
     """Base class for materials database clients."""
@@ -233,6 +370,7 @@ class MaterialsProjectClient(MaterialsDatabaseClient):
 
                 structure_data['functional'] = 'GGA PBE'
                 structure_data['source_database'] = 'Materials Project'
+                _populate_computed_fields(structure_data, formula_value)
                 results.append(structure_data)
 
             # Post-filter for properties MP API doesn't natively filter (moduli)
@@ -262,11 +400,23 @@ class MaterialsProjectClient(MaterialsDatabaseClient):
 class JARVISClient(MaterialsDatabaseClient):
     """JARVIS database client."""
 
+    # The JARVIS dft_3d dataset is ~75k entries and is fetched/parsed once per
+    # process, then reused across queries.  ``data('dft_3d')`` is otherwise
+    # re-downloaded/re-read on every call, which dominates retrieve-all timing.
+    _dataset_cache: Optional[list] = None
+
     def __init__(self, output_directory: Optional[Path] = None):
         super().__init__("jarvis", output_directory=output_directory)
         if data is None or JarvisAtoms is None:
             raise ImportError("jarvis-tools is required for JARVIS access")
-    
+
+    @classmethod
+    def _dataset(cls) -> list:
+        """Return the cached JARVIS dft_3d dataset, loading it once."""
+        if cls._dataset_cache is None:
+            cls._dataset_cache = data('dft_3d')
+        return cls._dataset_cache
+
     def get_structures(
         self,
         formula: str,
@@ -282,7 +432,7 @@ class JARVISClient(MaterialsDatabaseClient):
             return []
 
         try:
-            dft_3d = data('dft_3d')
+            dft_3d = self._dataset()
 
             results = []
             available_props = get_available_properties('jarvis')
@@ -314,6 +464,7 @@ class JARVISClient(MaterialsDatabaseClient):
 
                 structure_data['functional'] = 'GGA PBE/optB88vdW'
                 structure_data['source_database'] = 'JARVIS'
+                _populate_computed_fields(structure_data, entry_formula)
                 results.append(structure_data)
 
             return apply_post_filters(results, filters, STANDARD_PROPERTIES)
@@ -592,6 +743,7 @@ class AFLOWClient(MaterialsDatabaseClient):
             if entry.get('aurl'):
                 structure_data['aflow_entry'] = f"http://{entry['aurl']}" if not entry['aurl'].startswith(('http://', 'https://')) else entry['aurl']
 
+            _populate_computed_fields(structure_data, entry.get('compound', '') or formula)
             results.append(structure_data)
 
         return apply_post_filters(results, filters, STANDARD_PROPERTIES)
@@ -677,7 +829,10 @@ class AlexandriaClient(MaterialsDatabaseClient):
                     query_url = f"{url}/v1/structures"
                     params = {
                         'filter': filter_str,
-                        'page_limit': max(1, min(limit, 5)),
+                        # OPTIMADE servers cap page_limit (Alexandria allows up to 100);
+                        # scale with the requested limit so large/"retrieve all" queries
+                        # are not silently throttled to a handful of results.
+                        'page_limit': max(1, min(limit, 100)),
                     }
 
                     response = requests.get(query_url, params=params, timeout=30)
@@ -715,6 +870,12 @@ class AlexandriaClient(MaterialsDatabaseClient):
                                 except Exception as e:
                                     logger.warning(f"Could not create structure: {e}")
 
+                            if attributes.get("nsites") is not None and "num_sites" not in structure_data:
+                                structure_data["num_sites"] = attributes.get("nsites")
+                            _populate_computed_fields(
+                                structure_data,
+                                full_data.get("chemical_formula_reduced", "") or normalized_formula,
+                            )
                             results.append(structure_data)
 
                         logger.info(f"Found {len(entries)} materials from Alexandria ({functional})")
@@ -1222,6 +1383,12 @@ class MaterialsCloudClient(MaterialsDatabaseClient):
                 self._augment_with_structure_properties(structure_data)
                 self._augment_with_materials_project(structure_data, normalized_mp_id)
 
+                if attributes.get("nsites") is not None and "num_sites" not in structure_data:
+                    structure_data["num_sites"] = attributes.get("nsites")
+                _populate_computed_fields(
+                    structure_data,
+                    attributes.get("chemical_formula_reduced", "") or normalized_formula,
+                )
                 results.append(structure_data)
 
         return apply_post_filters(results[:limit], filters, STANDARD_PROPERTIES)
@@ -1469,6 +1636,12 @@ class OptimadeSearchClient(MaterialsDatabaseClient):
                 if structure is not None:
                     structure_data["structure"] = structure
 
+                if attributes.get("nsites") is not None and "num_sites" not in structure_data:
+                    structure_data["num_sites"] = attributes.get("nsites")
+                _populate_computed_fields(
+                    structure_data,
+                    attributes.get("chemical_formula_reduced", "") or normalized_formula,
+                )
                 results.append(structure_data)
                 provider_result_count += 1
 
@@ -1499,9 +1672,13 @@ class OptimadeSearchClient(MaterialsDatabaseClient):
 class MPDSClient(MaterialsDatabaseClient):
     """MPDS (Materials Platform for Data Science) database client."""
 
-    def __init__(self, api_key: str, output_directory: Optional[Path] = None):
+    def __init__(self, api_key: str, output_directory: Optional[Path] = None, *, allow_placeholder: bool = False):
         super().__init__("mpds", output_directory=output_directory)
         self.api_key = api_key
+        # When True, the simplified fallback returns a synthetic metadata-only
+        # record even when no real MPDS entry was retrieved.  This is opt-in
+        # because such records describe materials that may not actually exist.
+        self.allow_placeholder = allow_placeholder
         if MPDSDataRetrieval is None:
             raise ImportError("mpds-client is required for MPDS access")
         self.client = MPDSDataRetrieval(api_key=api_key)
@@ -1601,9 +1778,10 @@ class MPDSClient(MaterialsDatabaseClient):
                     except Exception as e:
                         logger.warning(f"Could not create structure: {e}")
 
+                    _populate_computed_fields(structure_data, chem_formula or query_label)
                     results.append(structure_data)
                     count += 1
-                
+
                 logger.info(f"Found {len(results)} materials from MPDS")
                 return apply_post_filters(results, filters, STANDARD_PROPERTIES)
                 
@@ -1695,6 +1873,12 @@ class MPDSClient(MaterialsDatabaseClient):
         elements: Optional[List[str]] = None,
     ) -> List[Dict]:
         """Simplified MPDS structure retrieval"""
+        if not self.allow_placeholder:
+            logger.info(
+                "MPDS returned no concrete structures; skipping synthetic placeholder "
+                "result (pass allow_placeholder=True to opt in)."
+            )
+            return []
         try:
             formula_value = format_chemsys(elements) if elements else formula
             # Create simplified MPDS data for property mapping
@@ -1904,6 +2088,7 @@ class OQMDClient(MaterialsDatabaseClient):
             structure_data.setdefault("functional", "OQMD DFT")
             structure_data.setdefault("source_database", "OQMD")
 
+            _populate_computed_fields(structure_data, entry.get("name", "") or formula)
             results.append(structure_data)
 
         return apply_post_filters(results, filters, STANDARD_PROPERTIES)
@@ -1987,19 +2172,37 @@ class MaterialsDatabaseRetriever:
         mpds_api_key: Optional[str] = None,
         output_directory: Optional[Path] = None,
         storage=None,
+        databases: Optional[Sequence[str]] = None,
     ):
         self.mp_api_key = mp_api_key
         self.mpds_api_key = mpds_api_key
         self.output_directory = Path(output_directory) if output_directory else (Path.cwd() / "downloaded_materials")
         self.output_directory.mkdir(parents=True, exist_ok=True)
         self.storage = storage  # Optional StorageBackend instance
+        self.enabled_databases = self._validate_databases(databases)
         self.clients: Dict[str, MaterialsDatabaseClient] = {}
         self._initialize_clients()
 
+    @staticmethod
+    def _validate_databases(databases: Optional[Sequence[str]]) -> Optional[set]:
+        """Validate a database subset, raising on unknown names."""
+        if databases is None:
+            return None
+        unknown = [d for d in databases if d not in SUPPORTED_DATABASES]
+        if unknown:
+            raise ValueError(
+                f"Unknown database(s): {', '.join(unknown)}. "
+                f"Choose from: {', '.join(SUPPORTED_DATABASES)}"
+            )
+        return set(databases)
+
+    def _db_enabled(self, name: str) -> bool:
+        return self.enabled_databases is None or name in self.enabled_databases
+
     def _initialize_clients(self):
-        """Initialize available database clients."""
+        """Initialize available database clients (restricted to the enabled subset)."""
         # Materials Project
-        if self.mp_api_key:
+        if self._db_enabled('materials_project') and self.mp_api_key:
             try:
                 self.clients['materials_project'] = MaterialsProjectClient(
                     self.mp_api_key, output_directory=self.output_directory
@@ -2007,56 +2210,62 @@ class MaterialsDatabaseRetriever:
                 logger.info("Materials Project client initialized")
             except Exception as e:
                 logger.error(f"Materials Project client failed: {e}")
-        
+
         # JARVIS
-        try:
-            self.clients['jarvis'] = JARVISClient(output_directory=self.output_directory)
-            logger.info("JARVIS client initialized")
-        except Exception as e:
-            logger.error(f"JARVIS client failed: {e}")
-        
+        if self._db_enabled('jarvis'):
+            try:
+                self.clients['jarvis'] = JARVISClient(output_directory=self.output_directory)
+                logger.info("JARVIS client initialized")
+            except Exception as e:
+                logger.error(f"JARVIS client failed: {e}")
+
         # AFLOW
-        try:
-            self.clients['aflow'] = AFLOWClient(output_directory=self.output_directory)
-            logger.info("AFLOW client initialized")
-        except Exception as e:
-            logger.error(f"AFLOW client failed: {e}")
-        
+        if self._db_enabled('aflow'):
+            try:
+                self.clients['aflow'] = AFLOWClient(output_directory=self.output_directory)
+                logger.info("AFLOW client initialized")
+            except Exception as e:
+                logger.error(f"AFLOW client failed: {e}")
+
         # Alexandria
-        try:
-            self.clients['alexandria'] = AlexandriaClient(output_directory=self.output_directory)
-            logger.info("Alexandria client initialized")
-        except Exception as e:
-            logger.error(f"Alexandria client failed: {e}")
-        
+        if self._db_enabled('alexandria'):
+            try:
+                self.clients['alexandria'] = AlexandriaClient(output_directory=self.output_directory)
+                logger.info("Alexandria client initialized")
+            except Exception as e:
+                logger.error(f"Alexandria client failed: {e}")
+
         # Materials Cloud
-        try:
-            self.clients['materials_cloud'] = MaterialsCloudClient(
-                output_directory=self.output_directory,
-                mp_api_key=self.mp_api_key,
-            )
-            logger.info("Materials Cloud client initialized")
-        except Exception as e:
-            logger.error(f"Materials Cloud client failed: {e}")
+        if self._db_enabled('materials_cloud'):
+            try:
+                self.clients['materials_cloud'] = MaterialsCloudClient(
+                    output_directory=self.output_directory,
+                    mp_api_key=self.mp_api_key,
+                )
+                logger.info("Materials Cloud client initialized")
+            except Exception as e:
+                logger.error(f"Materials Cloud client failed: {e}")
 
         # OPTIMADE (generic)
-        try:
-            self.clients['optimade'] = OptimadeSearchClient(
-                output_directory=self.output_directory,
-            )
-            logger.info("OPTIMADE client initialized")
-        except Exception as e:
-            logger.error(f"OPTIMADE client failed: {e}")
-        
+        if self._db_enabled('optimade'):
+            try:
+                self.clients['optimade'] = OptimadeSearchClient(
+                    output_directory=self.output_directory,
+                )
+                logger.info("OPTIMADE client initialized")
+            except Exception as e:
+                logger.error(f"OPTIMADE client failed: {e}")
+
         # OQMD
-        try:
-            self.clients['oqmd'] = OQMDClient(output_directory=self.output_directory)
-            logger.info("OQMD client initialized")
-        except Exception as e:
-            logger.error(f"OQMD client failed: {e}")
+        if self._db_enabled('oqmd'):
+            try:
+                self.clients['oqmd'] = OQMDClient(output_directory=self.output_directory)
+                logger.info("OQMD client initialized")
+            except Exception as e:
+                logger.error(f"OQMD client failed: {e}")
 
         # MPDS
-        if self.mpds_api_key:
+        if self._db_enabled('mpds') and self.mpds_api_key:
             try:
                 self.clients['mpds'] = MPDSClient(
                     self.mpds_api_key, output_directory=self.output_directory
@@ -2064,44 +2273,156 @@ class MaterialsDatabaseRetriever:
                 logger.info("MPDS client initialized")
             except Exception as e:
                 logger.error(f"MPDS client failed: {e}")
-    
-    def retrieve_materials(self, formula: str, limit_per_db: int = 3) -> Dict[str, List[Dict]]:
-        """Retrieve materials from all available databases"""
-        all_results = {}
-        
-        logger.info(f"Retrieving materials for formula: {formula}")
 
-        for db_name, client in self.clients.items():
-            logger.info(f"Querying {db_name}...")
-            try:
-                results = client.get_structures(formula, limit_per_db)
-                all_results[db_name] = results
-                logger.info(f"Found {len(results)} materials")
-                
-                # Save CIF files for retrieved materials
-                for i, material in enumerate(results):
-                    filename = f"{db_name}_{formula}_{i+1}"
+    def _select_clients(self, databases: Optional[Sequence[str]]):
+        """Return the (name, client) pairs to query for this call."""
+        if databases is None:
+            return list(self.clients.items())
+        self._validate_databases(databases)
+        wanted = set(databases)
+        return [(name, client) for name, client in self.clients.items() if name in wanted]
+
+    def _persist_results(
+        self,
+        db_name: str,
+        client: "MaterialsDatabaseClient",
+        results: List[Dict],
+        query_label: str,
+        save_cif: bool,
+    ) -> None:
+        """Write CIFs (optional) and persist to the storage backend (if configured)."""
+        for i, material in enumerate(results):
+            cif_path = None
+            if save_cif:
+                try:
+                    filename = f"{db_name}_{query_label}_{i + 1}"
                     cif_path = client.save_cif(material, filename)
                     logger.info(f"Saved: {cif_path}")
+                except Exception as exc:
+                    logger.warning(f"CIF save failed for {db_name} #{i + 1}: {exc}")
 
-                    # Persist to storage backend (if configured)
-                    if self.storage is not None:
-                        try:
-                            mat_copy = dict(material)
-                            mat_copy["cif_path"] = cif_path
-                            mat_copy["source_database"] = db_name
-                            self.storage.save_material(
-                                mat_copy, search_query=formula,
-                            )
-                        except Exception as exc:
-                            logger.warning(f"Storage save failed for {filename}: {exc}")
-                    
-            except Exception as e:
-                logger.error(f"{e}")
-                all_results[db_name] = []
-        
+            if self.storage is not None:
+                try:
+                    mat_copy = dict(material)
+                    if cif_path:
+                        mat_copy["cif_path"] = cif_path
+                    mat_copy["source_database"] = db_name
+                    self.storage.save_material(mat_copy, search_query=query_label)
+                except Exception as exc:
+                    logger.warning(f"Storage save failed for {db_name} #{i + 1}: {exc}")
+
+    def retrieve_materials(
+        self,
+        formula: Optional[str] = None,
+        limit_per_db: int = 3,
+        *,
+        elements: Optional[List[str]] = None,
+        filters: Optional[SearchFilters] = None,
+        databases: Optional[Sequence[str]] = None,
+        retrieve_all: bool = False,
+        hard_limit_per_db: int = DEFAULT_HARD_LIMIT_PER_DB,
+        parallel: bool = False,
+        max_workers: int = 6,
+        save_cif: bool = True,
+    ) -> Dict[str, List[Dict]]:
+        """Retrieve materials from the configured databases.
+
+        Parameters
+        ----------
+        formula:
+            Composition formula (e.g. ``"Fe2O3"``).  Optional when *elements* is
+            given.
+        elements:
+            Element-set (chemsys) search — returns materials containing **all**
+            of these elements.  Takes precedence over *formula* where supported.
+        filters:
+            A :class:`~mat_ret.search.SearchFilters` applied across every database
+            (server-side where supported, post-fetch otherwise).
+        databases:
+            Restrict this call to a subset of the initialized clients.
+        retrieve_all:
+            When ``True`` each database is queried up to *hard_limit_per_db*
+            instead of *limit_per_db* (a safety cap, never unbounded).
+        parallel:
+            Query databases concurrently.  Network fetches run in worker threads;
+            CIF writes and storage persistence always run on the calling thread.
+        save_cif:
+            When ``True`` (default) write a CIF + metadata file per result, as
+            before.  Storage persistence is independent of this flag.
+        """
+        if not formula and not elements:
+            raise ValueError("Provide either a formula or a list of elements")
+
+        eff_limit = hard_limit_per_db if retrieve_all else limit_per_db
+        query_label = format_chemsys(elements) if elements else formula
+        selected = self._select_clients(databases)
+
+        logger.info(f"Retrieving materials for {query_label} (limit={eff_limit}, parallel={parallel})")
+
+        def _fetch(client: "MaterialsDatabaseClient") -> List[Dict]:
+            return client.get_structures(formula, eff_limit, elements=elements, filters=filters)
+
+        all_results: Dict[str, List[Dict]] = {}
+
+        if parallel and len(selected) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_map = {executor.submit(_fetch, client): name for name, client in selected}
+                for future, name in ((f, future_map[f]) for f in future_map):
+                    try:
+                        all_results[name] = future.result()
+                    except Exception as exc:
+                        logger.error(f"{name} retrieval failed: {exc}")
+                        all_results[name] = []
+        else:
+            for name, client in selected:
+                logger.info(f"Querying {name}...")
+                try:
+                    all_results[name] = _fetch(client)
+                except Exception as exc:
+                    logger.error(f"{name} retrieval failed: {exc}")
+                    all_results[name] = []
+
+        # Persist on the calling thread (storage backends such as SQLite are not
+        # safe to share across threads).
+        client_map = dict(selected)
+        for name, results in all_results.items():
+            logger.info(f"Found {len(results)} materials from {name}")
+            self._persist_results(name, client_map[name], results, query_label, save_cif)
+
         return all_results
-    
+
+    def retrieve_unified(
+        self,
+        formula: Optional[str] = None,
+        limit_per_db: int = 3,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Like :meth:`retrieve_materials` but also return a de-duplicated, merged view.
+
+        Returns a dict with ``materials`` (flat, cross-database de-duplicated list),
+        ``by_database`` (the raw per-database results), and ``metadata``.
+        """
+        elements = kwargs.get("elements")
+        results_by_db = self.retrieve_materials(formula, limit_per_db, **kwargs)
+        merged = merge_duplicate_materials(results_by_db)
+        total_before = sum(len(v) for v in results_by_db.values())
+        return {
+            "materials": merged,
+            "by_database": results_by_db,
+            "metadata": {
+                "query": format_chemsys(elements) if elements else formula,
+                "mode": "elements" if elements else "formula",
+                "databases_queried": list(results_by_db.keys()),
+                "databases_with_results": [n for n, v in results_by_db.items() if v],
+                "total_before_dedup": total_before,
+                "total_after_dedup": len(merged),
+                "retrieve_all": bool(kwargs.get("retrieve_all", False)),
+            },
+        }
+
+
     def test_retrieval(self, test_formulas: List[str] = None) -> Dict:
         """Test retrieval from all databases with sample materials"""
         if test_formulas is None:

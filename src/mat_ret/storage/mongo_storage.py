@@ -107,19 +107,22 @@ class MongoDBStorage(StorageBackend):
         crystal_system: Optional[str] = None,
         band_gap_min: Optional[float] = None,
         band_gap_max: Optional[float] = None,
+        filters: Optional[Any] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
+        import re
+
         query: Dict[str, Any] = {}
 
         if formula is not None:
-            query["formula"] = {"$regex": f"^{formula}$", "$options": "i"}
+            query["formula"] = {"$regex": f"^{re.escape(formula)}$", "$options": "i"}
         if source_database is not None:
-            query["source_database"] = {"$regex": f"^{source_database}$", "$options": "i"}
+            query["source_database"] = {"$regex": f"^{re.escape(source_database)}$", "$options": "i"}
         if space_group_number is not None:
             query["space_group_number"] = space_group_number
         if crystal_system is not None:
-            query["crystal_system"] = {"$regex": f"^{crystal_system}$", "$options": "i"}
+            query["crystal_system"] = {"$regex": f"^{re.escape(crystal_system)}$", "$options": "i"}
         if band_gap_min is not None or band_gap_max is not None:
             bg_filter: Dict[str, float] = {}
             if band_gap_min is not None:
@@ -128,15 +131,27 @@ class MongoDBStorage(StorageBackend):
                 bg_filter["$lte"] = band_gap_max
             query["band_gap"] = bg_filter
         if elements:
-            query["elements"] = {"$all": [e for e in elements]}
+            # Case-insensitive "contains all" — stored symbols keep their original
+            # case (e.g. "Fe"), so match each element regardless of query casing.
+            query["elements"] = {
+                "$all": [
+                    {"$elemMatch": {"$regex": f"^{re.escape(e)}$", "$options": "i"}}
+                    for e in elements
+                ]
+            }
 
-        cursor = (
-            self._collection.find(query)
-            .sort("created_at", pymongo.DESCENDING)
-            .skip(offset)
-            .limit(limit)
-        )
-        return [self._doc_to_dict(doc) for doc in cursor]
+        needs_post = filters is not None and filters.has_any_filter()
+
+        cursor = self._collection.find(query).sort("created_at", pymongo.DESCENDING)
+        if not needs_post:
+            cursor = cursor.skip(offset).limit(limit)
+            return [self._doc_to_dict(doc) for doc in cursor]
+
+        results = [self._doc_to_dict(doc) for doc in cursor]
+        from ..search import apply_post_filters
+        from ..property_mapping import STANDARD_PROPERTIES
+        results = apply_post_filters(results, filters, STANDARD_PROPERTIES)
+        return results[offset: offset + limit]
 
     def list_materials(self, *, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         cursor = (

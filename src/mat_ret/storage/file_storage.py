@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -63,13 +64,20 @@ class FileStorage(StorageBackend):
         cleaned["_record_id"] = record_id
         if search_query:
             cleaned["_search_query"] = search_query
+        now = datetime.now(timezone.utc).isoformat()
+        cleaned.setdefault("created_at", now)
 
         # Write individual JSON
         json_path = self.output_dir / f"{record_id}.json"
         with open(json_path, "w", encoding="utf-8") as fh:
             json.dump(cleaned, fh, indent=2, default=str)
 
-        # Update index (lightweight summary)
+        elements = cleaned.get("elements") or []
+        num_elements = cleaned.get("num_elements")
+        if num_elements is None and elements:
+            num_elements = len(elements)
+
+        # Update index (lightweight summary used for querying without opening each JSON)
         self._index[record_id] = {
             "formula": cleaned.get("formula", ""),
             "material_id": cleaned.get("material_id", ""),
@@ -78,8 +86,17 @@ class FileStorage(StorageBackend):
             "space_group_number": cleaned.get("space_group_number"),
             "crystal_system": cleaned.get("crystal_system", ""),
             "band_gap": cleaned.get("band_gap"),
-            "elements": cleaned.get("elements", []),
+            "formation_energy_per_atom": cleaned.get("formation_energy_per_atom"),
+            "energy_above_hull": cleaned.get("energy_above_hull"),
+            "density": cleaned.get("density"),
+            "volume": cleaned.get("volume"),
+            "is_metallic": cleaned.get("is_metallic"),
+            "magnetic_moment": cleaned.get("magnetic_moment"),
+            "num_sites": cleaned.get("num_sites"),
+            "num_elements": num_elements,
+            "elements": elements,
             "search_query": search_query or "",
+            "created_at": now,
             "json_path": str(json_path),
         }
         self._save_index()
@@ -105,17 +122,18 @@ class FileStorage(StorageBackend):
         crystal_system: Optional[str] = None,
         band_gap_min: Optional[float] = None,
         band_gap_max: Optional[float] = None,
+        filters: Optional[Any] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         matches: List[Dict[str, Any]] = []
-        for rid, entry in self._index.items():
+        for rid, entry in self._sorted_index():
             if formula and entry.get("formula", "").lower() != formula.lower():
                 continue
             if source_database and entry.get("source_database", "").lower() != source_database.lower():
                 continue
             if elements:
-                mat_elems = {e.lower() for e in (entry.get("elements") or [])}
+                mat_elems = {str(e).lower() for e in (entry.get("elements") or [])}
                 if not all(e.lower() in mat_elems for e in elements):
                     continue
             if space_group_number is not None and entry.get("space_group_number") != space_group_number:
@@ -128,12 +146,26 @@ class FileStorage(StorageBackend):
             if band_gap_max is not None and (bg is None or bg > band_gap_max):
                 continue
             matches.append(dict(entry, _record_id=rid))
+
+        if filters is not None and filters.has_any_filter():
+            from ..search import apply_post_filters
+            from ..property_mapping import STANDARD_PROPERTIES
+            matches = apply_post_filters(matches, filters, STANDARD_PROPERTIES)
+
         return matches[offset: offset + limit]
 
     def list_materials(self, *, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
-        items = list(self._index.items())
+        items = self._sorted_index()
         sliced = items[offset: offset + limit]
         return [dict(v, _record_id=k) for k, v in sliced]
+
+    def _sorted_index(self) -> List[Any]:
+        """Return index items ordered most-recently-stored first (stable)."""
+        return sorted(
+            self._index.items(),
+            key=lambda kv: kv[1].get("created_at", ""),
+            reverse=True,
+        )
 
     def delete_material(self, record_id: str) -> bool:
         entry = self._index.pop(record_id, None)
